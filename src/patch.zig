@@ -61,19 +61,7 @@ pub fn mk_patch(
     defer _ = capstone.cs_close(&csh);
     const ctlfh = try ctl_asm.CtlFlowAssembler.init(arch, mode, endian);
 
-    if (libelf.elf_version(libelf.EV_CURRENT) == libelf.EV_NONE) return Error.WrongLibelf;
 
-    const elf = libelf.elf_begin(file_to_patch.handle, libelf.ELF_C_RDWR, null) orelse {
-        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
-        return Error.BeginFailed;
-    };
-    defer if (libelf.elf_end(elf) != 0) {
-        unreachable;
-    };
-    const kind = libelf.elf_kind(elf);
-    if (kind != libelf.ELF_K_ELF) {
-        return 1;
-    }
     const test_patch = &[_]u8{ 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
     var dst: usize = undefined;
     const c_ident: [*]const u8 = libelf.elf_getident(elf, &dst) orelse {

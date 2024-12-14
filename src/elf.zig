@@ -1,77 +1,180 @@
 const std = @import("std");
-const libelf = @cImport(@cInclude("libelf.h"));
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
 const ctl_asm = @import("ctl_asm.zig");
 
-const EI_CLASS: type = enum(u2) {
-    ELFCLASS32 = libelf.ELFCLASS32,
-    ELFCLASS64 = libelf.ELFCLASS64,
+const PType: type = enum(u32) {
+    PT_NULL = std.elf.PT_NULL,
+    PT_LOAD = std.elf.PT_LOAD,
+    PT_DYNAMIC = std.elf.PT_DYNAMIC,
+    PT_INTERP = std.elf.PT_INTERP,
+    PT_NOTE = std.elf.PT_NOTE,
+    PT_SHLIB = std.elf.PT_SHLIB,
+    PT_PHDR = std.elf.PT_PHDR,
+    PT_GNU_STACK = std.elf.PT_GNU_STACK,
 };
 
-fn ElfWord(comptime ei_class: EI_CLASS) type {
-    return switch (ei_class) {
-        .ELFCLASS32 => libelf.Elf32_Word,
-        .ELFCLASS64 => libelf.Elf64_Word,
-    };
+const PFlags: type = packed struct(u32) {
+    PF_X: bool,
+    PF_W: bool,
+    PF_R: bool,
+
+    const Self = @This();
+
+    comptime {
+        std.debug.assert(std.elf.PF_X == @as(u32, @bitCast(Self{ .PF_X = true })));
+        std.debug.assert(std.elf.PF_W == @as(u32, @bitCast(Self{ .PF_W = true })));
+        std.debug.assert(std.elf.PF_R == @as(u32, @bitCast(Self{ .PF_R = true })));
+    }
+};
+
+const Error = error {
+    EdgeNotFound,
+};
+
+// doing this super dumb for now.
+fn create_hole(stream: std.io.StreamSource, off: u64, size: u64, end: u64) void {
+    var b1: [1]u8 = undefined;
+    var b2: [1]u8 = undefined;
+    for (0..size) |i| {
+        stream.seekTo(off + i);
+        stream.read(b2);
+        stream.seekBy(size - b1.len);
+        while (try stream.getPos() < end) {
+            stream.seekBy(-1);
+            stream.write(b2);
+            b2[0] = b1[0];
+            stream.seekBy(size - b1.len);
+        }
+    }
 }
 
-fn ElfAddr(comptime ei_class: EI_CLASS) type {
-    return switch (ei_class) {
-        .ELFCLASS32 => libelf.Elf32_Addr,
-        .ELFCLASS64 => libelf.Elf64_Addr,
-    };
-}
+const ElfModder: type = struct {
+    header: std.elf.Header,
+    parse_source: std.io.StreamSource,
 
-fn ElfOff(comptime ei_class: EI_CLASS) type {
-    return switch (ei_class) {
-        .ELFCLASS32 => libelf.Elf32_Off,
-        .ELFCLASS64 => libelf.Elf64_Off,
-    };
-}
+    const Self = @This();
 
-fn ElfPhdr(comptime ei_class: EI_CLASS) type {
-    return switch (ei_class) {
-        inline .ELFCLASS32 => libelf.Elf32_Phdr,
-        inline .ELFCLASS64 => libelf.Elf64_Phdr,
-    };
-}
+    pub fn init(parse_source: std.io.StreamSource) !Self {
+        return Self{
+            .parse_source = parse_source,
+            .header = std.elf.Header.read(parse_source),
+        };
+    }
 
-fn ElfEhdr(comptime ei_class: EI_CLASS) type {
-    return switch (ei_class) {
-        inline .ELFCLASS32 => libelf.Elf32_Ehdr,
-        inline .ELFCLASS64 => libelf.Elf64_Ehdr,
-    };
-}
+    // Get an identifier for the location within the file where additional data could be inserted.
+    // only considers places which do not require generating an extra segment.
+    pub fn get_cave_option(self: Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
+        const prog_headers = self.header.program_header_iterator(self.parse_source);
+        const prev_mem_end: u64 = 0;
+        const maybe_curr_prog_header = try prog_headers.next();
+        // TODO: assuming that headers are sorted for now.
+        // even if these are sorted this doesnt really give the best result...
+        // ideally I would sort the pheaders by both file offset and memory offset.
+        // file offset will be used for the order of iteration (we want the largest file offset possible for the minimal adjustment).
+        // and memory offset will be used to check adjacent segments.
+        while (maybe_curr_prog_header) |curr_prog_header| {
+            const maybe_next_prog_header = try prog_headers.next();
+            defer {
+                prev_mem_end = curr_prog_header.p_vaddr + curr_prog_header.p_memsz;
+                maybe_curr_prog_header = maybe_next_prog_header;
+            }
+            if ((curr_prog_header.p_type != p_type) or
+                (curr_prog_header.p_flags != @as(@TypeOf(curr_prog_header.p_flags), @bitCast(p_flags)))) continue;
+            if ((curr_prog_header.p_vaddr - wanted_size) > prev_mem_end) return SegEdge{
+                .index = prog_headers.index - 2,
+                .is_end = false,
+            };
+            if (maybe_next_prog_header) |next_prog_header| {
+                if ((curr_prog_header.p_vaddr + curr_prog_header.p_memsz + wanted_size) >= next_prog_header.p_vaddr) continue;
+            } else return SegEdge{
+                .index = prog_headers.index - 2,
+                .is_end = true,
+            };
+        }
+        return null;
+    }
 
-fn ElfShdr(comptime ei_class: EI_CLASS) type {
-    return switch (ei_class) {
-        inline .ELFCLASS32 => libelf.Elf32_Shdr,
-        inline .ELFCLASS64 => libelf.Elf64_Shdr,
-    };
-}
+    pub fn create_cave(self: Self, size: u64, edge: SegEdge) !void {
+        const prog_headers = self.header.program_header_iterator(self.parse_source);
+        var needed_adjust = size;
+        var buf1: [1024]u8 = undefined;
+        var buf2: [1024]u8 = undefined;
+        prog_headers.index = edge.index + 1;
+        const first = try prog_headers.next() orelse return Error.EdgeNotFound;
+        if ((needed_adjust % first.p_align) != 0) needed_adjust += first.p_align - (needed_adjust % first.p_align);
+        var adjusted = 0;
+        self.parse_source.seekableStream().seekTo(first.p_offset);
+        while (adjusted < prog_header.p_filesz) {
+            self.parse_source.read(buf2);
+            self.parse_source.seekableStream().seekBy(
+        while () |prog_header| {
+            if ((needed_adjust % prog_header.p_align) != 0) needed_adjust += prog_header.p_align - (needed_adjust % prog_header.p_align);
+            self.parse_source.seekableStream().seekTo(first.p_offset)
+            adjusted = 0;
+            while (adjusted < prog_header.p_filesz) {
+                buf1
 
-const Error: type = error{};
+            }
+        }
+        self.parse_source.seekTo(self.header.entry)
+        const reader = self.parse_source.reader();
+        const writer = self.parse_source.writer();
+    }
+    fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: ElfWord(ei_class)) ?BlockInfo {
+        var phdr_num: usize = undefined;
+        if (libelf.elf_getphdrnum(elf, &phdr_num) == -1) {
+            unreachable;
+        }
+        const phdr_table: []ElfPhdr(ei_class) = elf_getphdr(ei_class, elf).?[0..phdr_num];
+        const code_cave_maybe: ?SegEdge = find_code_cave(ei_class, phdr_table, wanted_size);
+        var patch_buf_off: ElfOff(ei_class) = undefined;
+        var patch_buf_addr: ElfAddr(ei_class) = undefined;
+        var patch_buf: *[]u8 = undefined;
+        var scn: *libelf.Elf_Scn = undefined;
+        if (code_cave_maybe) |code_cave| {
+            const adjust_size = blk: {
+                if (code_cave.is_end) {
+                    patch_buf_off = phdr_table[code_cave.index].p_offset + phdr_table[code_cave.index].p_filesz;
+                    patch_buf_addr = phdr_table[code_cave.index].p_vaddr + phdr_table[code_cave.index].p_memsz;
+                    scn = find_scn_by_end(ei_class, elf, patch_buf_off).?;
+                    patch_buf = extend_scn_forword(ei_class, scn, wanted_size);
+                    break :blk wanted_size;
+                } else {
+                    phdr_table[code_cave.index].p_vaddr -= wanted_size;
+                    phdr_table[code_cave.index].p_paddr -= wanted_size;
+                    const align_size: ElfWord(ei_class) = @intCast(phdr_table[code_cave.index].p_align - (wanted_size % phdr_table[code_cave.index].p_align));
+                    phdr_table[code_cave.index].p_offset += align_size;
+                    patch_buf_off = phdr_table[code_cave.index].p_offset;
+                    patch_buf_addr = phdr_table[code_cave.index].p_vaddr;
+                    scn = find_scn_by_start(ei_class, elf, patch_buf_off).?;
+                    patch_buf = extend_scn_backword(ei_class, scn, wanted_size, align_size);
+                    break :blk wanted_size + align_size;
+                }
+            };
+            phdr_table[code_cave.index].p_filesz += wanted_size;
+            phdr_table[code_cave.index].p_memsz += wanted_size;
+            // adjusting the file offsets of the segments and secttions, other things might also need adjustment but I truly dont know.
+            std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT)});
+            adjust_elf_file(ei_class, elf, phdr_table, patch_buf_off, adjust_size);
+            // adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
+            // std.debug.print("flagging = {}\n ", .{libelf.elf_flagphdr(elf, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
+            // the minus one is because we need to adjust the section that starts right at the start of the segment (unlike with the segment where we just adjusted it).
+            // const cume_adjust = adjust_scns_after(ei_class, elf, patch_buf_off, wanted_size);
+            // adjust_ehdr(ei_class, elf, patch_buf_off, cume_adjust);
+        } else {
+            const new_phdr_table = new_seg_code_buf(ei_class, elf, phdr_table, wanted_size);
+            patch_buf_off = new_phdr_table[new_phdr_table.len - 1].p_offset;
+            patch_buf_addr = new_phdr_table[new_phdr_table.len - 1].p_vaddr;
+        }
 
-fn elf_getehdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf) ?*ElfEhdr(ei_class) {
-    return switch (ei_class) {
-        inline .ELFCLASS32 => libelf.elf32_getehdr(elf),
-        inline .ELFCLASS64 => libelf.elf64_getehdr(elf),
-    };
-}
+        std.debug.print("patch_buf_off = {x}\npatch_buf_addr = {x}\n", .{ patch_buf_off, patch_buf_addr });
 
-fn elf_getphdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf) ?[*]ElfPhdr(ei_class) {
-    return switch (ei_class) {
-        inline .ELFCLASS32 => libelf.elf32_getphdr(elf),
-        inline .ELFCLASS64 => libelf.elf64_getphdr(elf),
-    };
-}
+        std.debug.print("new section loc = {x}\n", .{patch_buf_off});
+        std.debug.print("new section size = {}\n", .{wanted_size});
 
-fn elf_getshdr(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn) ?*ElfShdr(ei_class) {
-    return switch (ei_class) {
-        inline .ELFCLASS32 => libelf.elf32_getshdr(scn),
-        inline .ELFCLASS64 => libelf.elf64_getshdr(scn),
-    };
-}
+        return BlockInfo{ .block = patch_buf, .addr = patch_buf_addr };
+    }
+};
 
 fn get_off_phdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOff(ei_class)) ?*ElfPhdr(ei_class) {
     const temp: [*]ElfPhdr(ei_class) = elf_getphdr(ei_class, elf).?;
@@ -114,7 +217,7 @@ fn get_scn_off_data(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, shdr: *El
 }
 
 const SegEdge: type = struct {
-    seg_idx: u16,
+    index: u16,
     is_end: bool,
 };
 
@@ -136,8 +239,8 @@ fn get_gap_size(seg_prox: SegEdge, ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_
     const start: u64 = blk: {
         if (seg_prox.is_end) {
             break :blk get_off(seg_prox, ei_class, phdr_table);
-        } else if (seg_prox.seg_idx != 0) {
-            break :blk get_off(SegEdge{ .seg_idx = seg_prox.seg_idx - 1, .is_end = true }, ei_class, phdr_table);
+        } else if (seg_prox.index != 0) {
+            break :blk get_off(SegEdge{ .index = seg_prox.index - 1, .is_end = true }, ei_class, phdr_table);
         } else {
             break :blk 0;
         }
@@ -145,8 +248,8 @@ fn get_gap_size(seg_prox: SegEdge, ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_
     const end: u64 = blk: {
         if (!seg_prox.is_end) {
             break :blk get_off(seg_prox, ei_class, phdr_table);
-        } else if (seg_prox.seg_idx != (phdr_table.len - 1)) {
-            break :blk get_off(SegEdge{ .seg_idx = seg_prox.seg_idx + 1, .is_end = false }, ei_class, phdr_table);
+        } else if (seg_prox.index != (phdr_table.len - 1)) {
+            break :blk get_off(SegEdge{ .index = seg_prox.index + 1, .is_end = false }, ei_class, phdr_table);
         } else {
             break :blk std.math.maxInt(u64);
         }
@@ -394,7 +497,7 @@ fn insert_jmp(ctlfh: ctl_asm.CtlFlowAssembler, patch_loc: []u8, target: u64, add
     return (try ctlfh.assemble_ctl_transfer(target, addr, patch_loc)).len;
 }
 
-fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), wanted_size: u64) ?SegEdge {
+fn find_code_cave(program_header_iterator: std.elf.ProgramHeaderIterator, wanted_size: u64) ?SegEdge {
     var prev: u16 = find(0, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     var curr: u16 = find(prev + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     if (gen_is_code_seg(ei_class)(phdr_table[prev])) {
@@ -402,7 +505,7 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
         //     return SegEdge{ .seg_idx = prev, .is_end = false };
         // }
         if ((phdr_table[prev].p_memsz <= phdr_table[prev].p_filesz) and (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz)))) {
-            return SegEdge{ .seg_idx = prev, .is_end = true };
+            return SegEdge{ .index = prev, .is_end = true };
         }
     }
     while (find(curr + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class))) |next| {
@@ -411,7 +514,7 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
             //     return SegEdge{ .seg_idx = curr, .is_end = false };
             // }
             if ((phdr_table[curr].p_memsz <= phdr_table[curr].p_filesz) and (wanted_size < (phdr_table[next].p_vaddr - (phdr_table[curr].p_vaddr + phdr_table[curr].p_memsz)))) {
-                return SegEdge{ .seg_idx = curr, .is_end = true };
+                return SegEdge{ .index = curr, .is_end = true };
             }
         }
         prev = curr;
@@ -422,7 +525,7 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
         //     return SegEdge{ .seg_idx = curr, .is_end = false };
         // }
         if (wanted_size < (std.math.maxInt(ElfWord(ei_class)) - phdr_table[curr].p_vaddr)) {
-            return SegEdge{ .seg_idx = curr, .is_end = true };
+            return SegEdge{ .index = curr, .is_end = true };
         }
     }
     return null;
@@ -548,61 +651,6 @@ fn find_scn_by_start(comptime ei_class: EI_CLASS, elf: *libelf.Elf, start: ElfOf
         }
     }
     return null;
-}
-
-fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: ElfWord(ei_class)) ?BlockInfo {
-    var phdr_num: usize = undefined;
-    if (libelf.elf_getphdrnum(elf, &phdr_num) == -1) {
-        unreachable;
-    }
-    const phdr_table: []ElfPhdr(ei_class) = elf_getphdr(ei_class, elf).?[0..phdr_num];
-    const code_cave_maybe: ?SegEdge = find_code_cave(ei_class, phdr_table, wanted_size);
-    var patch_buf_off: ElfOff(ei_class) = undefined;
-    var patch_buf_addr: ElfAddr(ei_class) = undefined;
-    var patch_buf: *[]u8 = undefined;
-    var scn: *libelf.Elf_Scn = undefined;
-    if (code_cave_maybe) |code_cave| {
-        const adjust_size = blk: {
-            if (code_cave.is_end) {
-                patch_buf_off = phdr_table[code_cave.seg_idx].p_offset + phdr_table[code_cave.seg_idx].p_filesz;
-                patch_buf_addr = phdr_table[code_cave.seg_idx].p_vaddr + phdr_table[code_cave.seg_idx].p_memsz;
-                scn = find_scn_by_end(ei_class, elf, patch_buf_off).?;
-                patch_buf = extend_scn_forword(ei_class, scn, wanted_size);
-                break :blk wanted_size;
-            } else {
-                phdr_table[code_cave.seg_idx].p_vaddr -= wanted_size;
-                phdr_table[code_cave.seg_idx].p_paddr -= wanted_size;
-                const align_size: ElfWord(ei_class) = @intCast(phdr_table[code_cave.seg_idx].p_align - (wanted_size % phdr_table[code_cave.seg_idx].p_align));
-                phdr_table[code_cave.seg_idx].p_offset += align_size;
-                patch_buf_off = phdr_table[code_cave.seg_idx].p_offset;
-                patch_buf_addr = phdr_table[code_cave.seg_idx].p_vaddr;
-                scn = find_scn_by_start(ei_class, elf, patch_buf_off).?;
-                patch_buf = extend_scn_backword(ei_class, scn, wanted_size, align_size);
-                break :blk wanted_size + align_size;
-            }
-        };
-        phdr_table[code_cave.seg_idx].p_filesz += wanted_size;
-        phdr_table[code_cave.seg_idx].p_memsz += wanted_size;
-        // adjusting the file offsets of the segments and secttions, other things might also need adjustment but I truly dont know.
-        std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT)});
-        adjust_elf_file(ei_class, elf, phdr_table, patch_buf_off, adjust_size);
-        // adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
-        // std.debug.print("flagging = {}\n ", .{libelf.elf_flagphdr(elf, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
-        // the minus one is because we need to adjust the section that starts right at the start of the segment (unlike with the segment where we just adjusted it).
-        // const cume_adjust = adjust_scns_after(ei_class, elf, patch_buf_off, wanted_size);
-        // adjust_ehdr(ei_class, elf, patch_buf_off, cume_adjust);
-    } else {
-        const new_phdr_table = new_seg_code_buf(ei_class, elf, phdr_table, wanted_size);
-        patch_buf_off = new_phdr_table[new_phdr_table.len - 1].p_offset;
-        patch_buf_addr = new_phdr_table[new_phdr_table.len - 1].p_vaddr;
-    }
-
-    std.debug.print("patch_buf_off = {x}\npatch_buf_addr = {x}\n", .{ patch_buf_off, patch_buf_addr });
-
-    std.debug.print("new section loc = {x}\n", .{patch_buf_off});
-    std.debug.print("new section size = {}\n", .{wanted_size});
-
-    return BlockInfo{ .block = patch_buf, .addr = patch_buf_addr };
 }
 
 const MAX_JMP_SIZE = 5; // this is based on x86_64, might need to do some actual work to make this cross architecture.
