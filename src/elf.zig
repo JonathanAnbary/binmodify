@@ -1,8 +1,9 @@
 const std = @import("std");
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
 const ctl_asm = @import("ctl_asm.zig");
+const native_endian = @import("builtin").target.cpu.arch.endian();
 
-const PType: type = enum(u32) {
+pub const PType: type = enum(u32) {
     PT_NULL = std.elf.PT_NULL,
     PT_LOAD = std.elf.PT_LOAD,
     PT_DYNAMIC = std.elf.PT_DYNAMIC,
@@ -10,13 +11,26 @@ const PType: type = enum(u32) {
     PT_NOTE = std.elf.PT_NOTE,
     PT_SHLIB = std.elf.PT_SHLIB,
     PT_PHDR = std.elf.PT_PHDR,
+    PT_TLS = std.elf.PT_TLS,
+    PT_NUM = std.elf.PT_NUM,
+    PT_LOOS = std.elf.PT_LOOS,
+    PT_GNU_EH_FRAME = std.elf.PT_GNU_EH_FRAME,
     PT_GNU_STACK = std.elf.PT_GNU_STACK,
+    PT_GNU_RELRO = std.elf.PT_GNU_RELRO,
+    PT_LOSUNW = std.elf.PT_LOSUNW,
+    // PT_SUNWBSS = std.elf.PT_SUNWBSS,
+    PT_SUNWSTACK = std.elf.PT_SUNWSTACK,
+    PT_HISUNW = std.elf.PT_HISUNW,
+    // PT_HIOS = std.elf.PT_HIOS,
+    PT_LOPROC = std.elf.PT_LOPROC,
+    PT_HIPROC = std.elf.PT_HIPROC,
 };
 
-const PFlags: type = packed struct(u32) {
-    PF_X: bool,
-    PF_W: bool,
-    PF_R: bool,
+pub const PFlags: type = packed struct(u32) {
+    PF_X: bool = false,
+    PF_W: bool = false,
+    PF_R: bool = false,
+    _pad: u29 = 0,
 
     const Self = @This();
 
@@ -32,8 +46,6 @@ const Error = error{
 };
 
 fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) !void {
-    std.debug.assert(end < try stream.getEndPos());
-    std.debug.assert(start < end);
     var buff: [1024]u8 = undefined;
     const shift_start: u64 = blk: {
         if (end < (start + amt)) {
@@ -44,29 +56,25 @@ fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) !
     };
     var pos = shift_start;
     while ((pos + buff.len) < end) : (pos += buff.len) {
-        std.debug.print("shifting {} bytes at {} to {}\n", .{ buff.len, pos, pos + amt });
-        try stream.seekableStream().seekTo(pos);
+        try stream.seekTo(pos);
         _ = try stream.read(&buff);
-        try stream.seekableStream().seekTo(pos + amt);
+        try stream.seekTo(pos + amt);
         _ = try stream.write(&buff);
     }
-    std.debug.print("shifting {} bytes at {} to {}\n", .{ end - pos, pos, pos + amt });
-    try stream.seekableStream().seekTo(pos);
+    try stream.seekTo(pos);
     _ = try stream.read(buff[0 .. end - pos]);
-    try stream.seekableStream().seekTo(pos + amt);
+    try stream.seekTo(pos + amt);
     _ = try stream.write(buff[0 .. end - pos]);
     pos = shift_start;
     while (pos > (start + buff.len)) : (pos -= buff.len) {
-        std.debug.print("shifting {} bytes at {} to {}\n", .{ buff.len, pos - buff.len, pos - buff.len + amt });
-        try stream.seekableStream().seekTo(pos - buff.len);
+        try stream.seekTo(pos - buff.len);
         _ = try stream.read(&buff);
-        try stream.seekableStream().seekTo(pos - buff.len + amt);
+        try stream.seekTo(pos - buff.len + amt);
         _ = try stream.write(&buff);
     }
-    std.debug.print("shifting {} bytes at {} to {}\n", .{ pos - start, start, start + amt });
-    try stream.seekableStream().seekTo(start);
+    try stream.seekTo(start);
     _ = try stream.read(buff[0 .. pos - start]);
-    try stream.seekableStream().seekTo(start + amt);
+    try stream.seekTo(start + amt);
     _ = try stream.write(buff[0 .. pos - start]);
 }
 
@@ -86,85 +94,95 @@ test "test shift stream" {
     var buf2 = [1]u8{'A'} ** 1024 ++ "\n".* ++ [1]u8{'B'} ** 1024 ++ "\n".* ++ [1]u8{'C'} ** 1024 ++ "\n".* ++ [1]u8{'D'} ** 1024 ++ "\n".* ++ [1]u8{'E'} ** 1024 ++ "\n".* ++ [1]u8{'F'} ** 1024 ++ "\n".*;
     var expected2 = [1]u8{'A'} ** 1024 ++ "\n".* ++ [1]u8{'B'} ** 1024 ++ "\n".* ++ [1]u8{'C'} ** 1024 ++ "\n".* ++ [1]u8{'D'} ** 1024 ++ "\n".* ++ [1]u8{'E'} ** 1024 ++ "\n".* ++ [1]u8{'F'} ** 1024 ++ "\n".*;
     @memcpy(expected2[start2 + shift2 .. end2 + shift2], buf2[start2..end2]);
-    std.debug.print("{} shifts to {}, {} shifts to {}\n", .{ start2, start2 + shift2, end2, end2 + shift2 });
     var stream2 = std.io.StreamSource{ .buffer = std.io.fixedBufferStream(&buf2) };
     try shift_forward(&stream2, start2, end2, shift2);
     try std.testing.expectEqualStrings(&expected2, &buf2);
 }
 
-//
-// const ElfModder: type = struct {
-//     header: std.elf.Header,
-//     parse_source: std.io.StreamSource,
-//
-//     const Self = @This();
-//
-//     pub fn init(parse_source: std.io.StreamSource) !Self {
-//         return Self{
-//             .parse_source = parse_source,
-//             .header = std.elf.Header.read(parse_source),
-//         };
-//     }
-//
-//     // Get an identifier for the location within the file where additional data could be inserted.
-//     // only considers places which do not require generating an extra segment.
-//     pub fn get_cave_option(self: Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
-//         const prog_headers = self.header.program_header_iterator(self.parse_source);
-//         const prev_mem_end: u64 = 0;
-//         const maybe_curr_prog_header = try prog_headers.next();
-//         // TODO: assuming that headers are sorted for now.
-//         // even if these are sorted this doesnt really give the best result...
-//         // ideally I would sort the pheaders by both file offset and memory offset.
-//         // file offset will be used for the order of iteration (we want the largest file offset possible for the minimal adjustment).
-//         // and memory offset will be used to check adjacent segments.
-//         while (maybe_curr_prog_header) |curr_prog_header| {
-//             const maybe_next_prog_header = try prog_headers.next();
-//             defer {
-//                 prev_mem_end = curr_prog_header.p_vaddr + curr_prog_header.p_memsz;
-//                 maybe_curr_prog_header = maybe_next_prog_header;
-//             }
-//             if ((curr_prog_header.p_type != p_type) or
-//                 (curr_prog_header.p_flags != @as(@TypeOf(curr_prog_header.p_flags), @bitCast(p_flags)))) continue;
-//             if ((curr_prog_header.p_vaddr - wanted_size) > prev_mem_end) return SegEdge{
-//                 .index = prog_headers.index - 2,
-//                 .is_end = false,
-//             };
-//             if (maybe_next_prog_header) |next_prog_header| {
-//                 if ((curr_prog_header.p_vaddr + curr_prog_header.p_memsz + wanted_size) >= next_prog_header.p_vaddr) continue;
-//             } else return SegEdge{
-//                 .index = prog_headers.index - 2,
-//                 .is_end = true,
-//             };
-//         }
-//         return null;
-//     }
-//
-//     pub fn create_cave(self: Self, size: u64, edge: SegEdge) !void {
-//         const prog_headers = self.header.program_header_iterator(self.parse_source);
-//         var needed_adjust = size;
-//         var buf1: [1024]u8 = undefined;
-//         var buf2: [1024]u8 = undefined;
-//         prog_headers.index = edge.index + 1;
-//         const first = try prog_headers.next() orelse return Error.EdgeNotFound;
-//         if ((needed_adjust % first.p_align) != 0) needed_adjust += first.p_align - (needed_adjust % first.p_align);
-//         var adjusted = 0;
-//         self.parse_source.seekableStream().seekTo(first.p_offset);
-//         while (adjusted < prog_header.p_filesz) {
-//             self.parse_source.read(buf2);
-//             self.parse_source.seekableStream().seekBy(
-//         while () |prog_header| {
-//             if ((needed_adjust % prog_header.p_align) != 0) needed_adjust += prog_header.p_align - (needed_adjust % prog_header.p_align);
-//             self.parse_source.seekableStream().seekTo(first.p_offset)
-//             adjusted = 0;
-//             while (adjusted < prog_header.p_filesz) {
-//                 buf1
-//
-//             }
-//         }
-//         self.parse_source.seekTo(self.header.entry)
-//         const reader = self.parse_source.reader();
-//         const writer = self.parse_source.writer();
-//     }
+pub const SegEdge: type = struct {
+    index: u16,
+    is_end: bool,
+};
+
+pub const ElfModder: type = struct {
+    header: std.elf.Header,
+    parse_source: *std.io.StreamSource,
+
+    const Self = @This();
+
+    pub fn init(parse_source: *std.io.StreamSource) !Self {
+        return Self{
+            .parse_source = parse_source,
+            .header = try std.elf.Header.read(parse_source),
+        };
+    }
+
+    // Get an identifier for the location within the file where additional data could be inserted.
+    // only considers places which do not require generating an extra segment.
+    pub fn get_cave_option(self: Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
+        var prog_headers = self.header.program_header_iterator(self.parse_source);
+        var prev_mem_end: u64 = 0;
+        var maybe_curr_prog_header = try prog_headers.next();
+        // TODO: assuming that headers are sorted for now.
+        // even if these are sorted this doesnt really give the best result...
+        // ideally I would sort the pheaders by both file offset and memory offset.
+        // file offset will be used for the order of iteration (we want the largest file offset possible for the minimal adjustment).
+        // and memory offset will be used to check adjacent segments.
+        while (maybe_curr_prog_header) |curr_prog_header| {
+            const maybe_next_prog_header = try prog_headers.next();
+            defer {
+                prev_mem_end = curr_prog_header.p_vaddr + curr_prog_header.p_memsz;
+                maybe_curr_prog_header = maybe_next_prog_header;
+            }
+            std.debug.print("{X}\n", .{curr_prog_header.p_type});
+            if ((@as(PType, @enumFromInt(curr_prog_header.p_type)) != p_type) or
+                (curr_prog_header.p_flags != @as(@TypeOf(curr_prog_header.p_flags), @bitCast(p_flags)))) continue;
+            if ((curr_prog_header.p_vaddr - wanted_size) > prev_mem_end) return SegEdge{
+                .index = @intCast(prog_headers.index - 2),
+                .is_end = false,
+            };
+            if (maybe_next_prog_header) |next_prog_header| {
+                if ((curr_prog_header.p_vaddr + curr_prog_header.p_memsz + wanted_size) >= next_prog_header.p_vaddr) continue;
+            } else return SegEdge{
+                .index = @intCast(prog_headers.index - 2),
+                .is_end = true,
+            };
+        }
+        return null;
+    }
+
+    // NOTE: Doing this the really dumb way for now.
+    pub fn create_cave(self: Self, size: u64, edge: SegEdge) !void {
+        var prog_headers = self.header.program_header_iterator(self.parse_source);
+        var needed_adjust = size;
+        prog_headers.index = edge.index + 1;
+        for (edge.index..self.header.phnum) |x| {
+            const i = self.header.phnum - x;
+            needed_adjust = size;
+            while (try prog_headers.next()) |*prog_header| {
+                if ((prog_header.p_align != 0) and ((needed_adjust % prog_header.p_align) != 0)) needed_adjust += prog_header.p_align - (needed_adjust % prog_header.p_align);
+                if (prog_headers.index == i) {
+                    try shift_forward(self.parse_source, prog_header.p_offset, prog_header.p_offset + prog_header.p_filesz, needed_adjust);
+                    try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * prog_headers.index);
+                    if (self.header.is_64) {
+                        var new_off: std.elf.Elf64_Off = prog_header.p_offset + needed_adjust;
+                        new_off = if (self.header.endian != native_endian) @as(std.elf.Elf64_Off, @byteSwap(new_off)) else new_off;
+                        try self.parse_source.seekTo(@offsetOf(std.elf.Elf64_Phdr, "p_offset"));
+                        // TODO: should be checking this.
+                        _ = try self.parse_source.write(&std.mem.toBytes(new_off));
+                    } else {
+                        var new_off: std.elf.Elf32_Off = @intCast(prog_header.p_offset + needed_adjust);
+                        new_off = if (self.header.endian != native_endian) @as(std.elf.Elf32_Off, @byteSwap(new_off)) else new_off;
+                        try self.parse_source.seekTo(@offsetOf(std.elf.Elf32_Phdr, "p_offset"));
+                        _ = try self.parse_source.write(&std.mem.toBytes(new_off));
+                    }
+                    break;
+                }
+            }
+        }
+        // TODO: adjust sections as well (and maybe debug info?)
+    }
+};
 //     fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: ElfWord(ei_class)) ?BlockInfo {
 //         var phdr_num: usize = undefined;
 //         if (libelf.elf_getphdrnum(elf, &phdr_num) == -1) {
@@ -261,10 +279,6 @@ test "test shift stream" {
 //     return null;
 // }
 //
-// const SegEdge: type = struct {
-//     index: u16,
-//     is_end: bool,
-// };
 //
 // fn get_addr(seg_idx: u32, is_end: bool, ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) u64 {
 //     if (is_end) {
