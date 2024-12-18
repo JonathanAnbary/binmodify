@@ -24,7 +24,7 @@ pub fn main() !void {
     defer f.close();
     var stream = std.io.StreamSource{ .file = f };
     var elf_modder: elf.ElfModder = try elf.ElfModder.init(&stream);
-    const option = try elf_modder.get_cave_option(2000, elf.PType.PT_LOAD, elf.PFlags{ .PF_X = true, .PF_R = true }) orelse return find_cave_err(stdout.any());
+    const option = try elf_modder.get_cave_option(1000, elf.PType.PT_LOAD, elf.PFlags{ .PF_X = true, .PF_R = true }) orelse return find_cave_err(stdout.any());
     try stdout.print("found cave option {}\n", .{option});
     try elf_modder.create_cave(1000, option);
     try stdout.print("cave created succussfully.\n", .{});
