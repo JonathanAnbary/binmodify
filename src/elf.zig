@@ -102,17 +102,18 @@ test "test shift stream" {
 }
 
 pub const SegEdge: type = struct {
-    offset_index: u16,
+    offset_index: usize,
     is_end: bool,
 };
 
-const PhdrFields = std.meta.FieldEnum(std.elf.Elf64_Phdr);
+const Phdr64Fields = std.meta.FieldEnum(std.elf.Elf64_Phdr);
+const Phdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Phdr);
 
 fn offset_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
-    return pheaders.items(PhdrFields.p_offset)[lhs] < pheaders.items(PhdrFields.p_offset)[rhs];
+    return pheaders.items(Phdr64Fields.p_offset)[lhs] < pheaders.items(Phdr64Fields.p_offset)[rhs];
 }
 fn vaddr_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
-    return pheaders.items(PhdrFields.p_vaddr)[lhs] < pheaders.items(PhdrFields.p_vaddr)[rhs];
+    return pheaders.items(Phdr64Fields.p_vaddr)[lhs] < pheaders.items(Phdr64Fields.p_vaddr)[rhs];
 }
 
 pub const ElfModder: type = struct {
@@ -127,11 +128,11 @@ pub const ElfModder: type = struct {
     pub fn init(gpa: std.mem.Allocator, parse_source: *std.io.StreamSource) !Self {
         var header = try std.elf.Header.read(parse_source);
         var pheaders = std.MultiArrayList(std.elf.Elf64_Phdr){};
-        var prog_headers_iter = header.program_header_iterator();
-        var count = 0;
-        while (prog_headers_iter.next()) |prog_header| {
+        var prog_headers_iter = header.program_header_iterator(parse_source);
+        var count: usize = 0;
+        while (try prog_headers_iter.next()) |prog_header| {
             count += 1;
-            pheaders.append(gpa, prog_header);
+            try pheaders.append(gpa, prog_header);
         }
         var pheaders_offset_order = try gpa.alloc(usize, count);
         var pheaders_vaddr_order = try gpa.alloc(usize, count);
@@ -157,17 +158,16 @@ pub const ElfModder: type = struct {
     }
 
     // Get an identifier for the location within the file where additional data could be inserted.
-    // only considers places which do not require generating an extra segment.
+    // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
     pub fn get_cave_option(self: *Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
-        const p_types = self.pheaders.items(PhdrFields.p_type);
-        const p_flagss = self.pheaders.items(PhdrFields.p_flags);
-        const p_vaddrs = self.pheaders.items(PhdrFields.p_vaddr);
-        const p_memszs = self.pheaders.items(PhdrFields.p_memsz);
+        const p_types = self.pheaders.items(Phdr64Fields.p_type);
+        const p_flagss = self.pheaders.items(Phdr64Fields.p_flags);
+        const p_vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
+        const p_memszs = self.pheaders.items(Phdr64Fields.p_memsz);
         var i = self.pheaders_offset_order.len;
         while (i > 0) {
             i -= 1;
             const index = self.pheaders_offset_order[i];
-            std.debug.print("prog_header[{}] = {}\n", .{ index, self.pheaders.get(index) });
             if ((@as(PType, @enumFromInt(p_types[index])) != p_type) or
                 (p_flagss[index] != @as(std.elf.Elf64_Word, @bitCast(p_flags)))) continue;
             // NOTE: this assumes you dont have an upper bound on possible memory address.
@@ -176,114 +176,137 @@ pub const ElfModder: type = struct {
                 .offset_index = i,
                 .is_end = true,
             };
-            if (p_vaddrs[index] > (wanted_size + (if (index == 0) 0 else (p_vaddrs[index - 1] + p_memszs[index - 1])))) return SegEdge{
-                .offset_index = i,
-                .is_end = false,
-            };
+            // if (p_vaddrs[index] > (wanted_size + (if (index == 0) 0 else (p_vaddrs[index - 1] + p_memszs[index - 1])))) return SegEdge{
+            //     .offset_index = i,
+            //     .is_end = false,
+            // };
         }
         return null;
     }
 
-    // NOTE: field changes must NOT change the memory order or offset order! (why shouldent they not?!)
+    // NOTE: field changes must NOT change the memory order or offset order!
     // TODO: consider what to do when setting the segment which holds the phdrtable itself.
     fn set_phdr_field(self: *Self, index: usize, val: u64, comptime field_name: []const u8) !void {
         try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
         if (self.header.is_64) {
-            const T = std.meta.fieldInfo(std.elf.Elf64_Phdr, @field(PhdrFields, field_name)).type;
+            const T = std.meta.fieldInfo(std.elf.Elf64_Phdr, @field(Phdr64Fields, field_name)).type;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
             // TODO: should be checking this.
             _ = try self.parse_source.write(&std.mem.toBytes(temp));
         } else {
-            const T = std.meta.fieldInfo(std.elf.Elf32_Phdr, @field(PhdrFields, field_name)).type;
+            const T = std.meta.fieldInfo(std.elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Phdr, field_name));
             // TODO: should be checking this.
             _ = try self.parse_source.write(&std.mem.toBytes(temp));
         }
-        self.pheaders.items(@field(PhdrFields, field_name))[index] = @intCast(val);
+        self.pheaders.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
     }
 
     // NOTE: Doing this the really dumb way for now.
-    pub fn create_cave(self: *Self, size: u64, edge: SegEdge, gpa: std.mem.Allocator) !void {
-        const aligns = self.pheaders.items(PhdrFields.p_align);
-        const offsets = self.pheaders.items(PhdrFields.p_offset);
-        const fileszs = self.pheaders.items(PhdrFields.p_filesz);
-        const memszs = self.pheaders.items(PhdrFields.p_memsz);
+    pub fn create_cave(self: *Self, gpa: std.mem.Allocator, size: u64, edge: SegEdge) !void {
+        const aligns = self.pheaders.items(Phdr64Fields.p_align);
+        const offsets = self.pheaders.items(Phdr64Fields.p_offset);
+        const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);
+        const memszs = self.pheaders.items(Phdr64Fields.p_memsz);
         const index = self.pheaders_offset_order[edge.offset_index];
         // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
-        const align_offset = (if (edge.is_end) offsets[index] else offsets[index] + (aligns[index] - (size % aligns[index]))) % aligns[index];
-        const prev_off_end = if (edge.offset_index == 0) {
-            if (self.header.is_64) {
-                @sizeOf(std.elf.Elf64_Phdr);
-            } else {
-                @sizeOf(std.elf.Elf32_Phdr);
-            }
-        } else {
-            const temp = self.pheaders_offset_order[edge.offset_index - 1];
-            offsets[temp] + fileszs[temp];
-        };
-        std.debug.assert(prev_off_end <= offsets[index]);
-        const new_offset = prev_off_end +
-            (if ((prev_off_end % aligns[index]) <= align_offset) align_offset else aligns[index] + align_offset) -
-            (prev_off_end % aligns[index]);
-        if (new_offset < offsets[index]) {
-            const adjustment = offsets[index] - new_offset;
-        } else if (new_offset > offsets[index]) {
-            std.debug.assert(!edge.is_end);
-            const adjustment 
-        }
+        // and for the case of a start edge whith enough space from the previous segment offset.
+        // const align_offset = (if (edge.is_end) offsets[index] else offsets[index] + (aligns[index] - (size % aligns[index]))) % aligns[index];
+        // const prev_off_end = if (edge.offset_index == 0) {
+        //     if (self.header.is_64) {
+        //         @sizeOf(std.elf.Elf64_Phdr);
+        //     } else {
+        //         @sizeOf(std.elf.Elf32_Phdr);
+        //     }
+        // } else {
+        //     const temp = self.pheaders_offset_order[edge.offset_index - 1];
+        //     offsets[temp] + fileszs[temp];
+        // };
+        // std.debug.assert(prev_off_end <= offsets[index]);
+        // const new_offset = prev_off_end +
+        //     (
+        //         if ((prev_off_end % aligns[index]) <= align_offset) {
+        //             align_offset;
+        //         } else {
+        //             aligns[index] + align_offset;
+        //         }
+        //     ) - (prev_off_end % aligns[index]);
+        // if (new_offset < offsets[index]) {
+        //     const adjustment = size - (offsets[index] - new_offset);
+        // } else if (new_offset > offsets[index]) {
+        //     std.debug.assert(!edge.is_end);
+        //     const adjustment = size + new_offset - offsets[index];
+        // }
+        std.debug.assert(edge.is_end);
         var adjustments = std.ArrayListUnmanaged(usize){};
-        if (size - (offsets[index] - new_offset) <= 0)
-
-        if (!edge.is_end) {
-            const temp = if ((aligns[index] != 0) and ((size % aligns[index]) != 0)) (aligns[index] - (size % aligns[index])) else 0;
-            if (offsets[index] > size + temp + if (edge.offset_index == 0) 0 else (offsets[self.pheaders_offset_order[edge.offset_index - 1]])) {
-                try self.set_phdr_field(index, offsets[index] - size - temp, "p_offset");
-                try self.set_phdr_field(index, fileszs[index] + size, "p_filesz");
-                try self.set_phdr_field(index, memszs[index] + size, "p_memsz");
-                return;
-            }
+        defer adjustments.deinit(gpa);
+        var needed_size = size;
+        var off_idx = edge.offset_index + 1;
+        std.debug.print("first seg - {}\n", .{index});
+        while (off_idx < self.pheaders_offset_order.len) : (off_idx += 1) {
+            const seg_index = self.pheaders_offset_order[off_idx];
+            const prev_seg_index = self.pheaders_offset_order[off_idx - 1];
+            const existing_gap = offsets[seg_index] - (offsets[prev_seg_index] + fileszs[prev_seg_index]);
+            std.debug.print("existing_gap - {X} ({X} - ({X} + {X})), needed_size - {X}\n", .{ existing_gap, offsets[seg_index], offsets[prev_seg_index], fileszs[prev_seg_index], needed_size });
+            if (needed_size < existing_gap) break;
+            needed_size -= existing_gap;
+            if ((aligns[seg_index] != 0) and ((needed_size % aligns[seg_index]) != 0)) needed_size += aligns[seg_index] - (needed_size % aligns[seg_index]);
+            try adjustments.append(gpa, needed_size);
         }
-        if (edge.offset_index != self.pheaders_offset_order.len - 1) {
-            var adjustments = try gpa.alloc(self.pheaders_offset_order.len - edge.offset_index - 1);
-            defer gpa.free(adjustments);
-            // NOTE: technically you can look around the segment before doing anything to check if there is already place for a cave.
-            const temp = if (edge.is_end) {
-                size;
-            } else {
-                size + aligns[index] - (size % aligns[index]);
-            };
-            const existing_gap = (offsets[self.pheaders_offset_order[edge.offset_index + 1]] - offsets[index] - fileszs[index]);
-            adjustments[0] = if (temp > existing_gap) temp - existing_gap else 0;
-            if (adjustments[0] != 0) {
-                @memset(adjustments[1..], 0);
-                for (edge.offset_index + 2..self.pheaders_offset_order.len) |i| {
-                    adjustments[i] = adjustments[i - 1];
-                    index = self.pheaders_offset_order[i];
-                    const offset = offsets[index];
-                    const p_align = aligns[index];
-                    const prev_off_end = if (i == 0) 0 else (offsets[self.pheaders_offset_order[i - 1]] + fileszs[self.pheaders_offset_order[i - 1]]);
-                    if (adjustments[i - 1] > (offset - prev_off_end)) adjustments[i] -= (offset - prev_off_end) else break;
-                    if ((p_align != 0) and ((adjustments[i] % p_align) != 0)) adjustments[i] += p_align - (adjustments[i] % p_align);
-                }
-                var i = adjustments.len;
-                while (i > 1) {
-                    i -= 1;
-                    index = self.pheaders_offset_order[i + edge.offset_index];
-                    try shift_forward(self.parse_source, offsets[index], offsets[index] + fileszs[index], adjustments[i]);
-                    try self.set_phdr_field(index, offsets[index] + adjustments[i], "p_offset");
-                }
-            }
+        var i = adjustments.items.len;
+        std.debug.print("{any}\n", .{adjustments.items});
+        while (i > 0) {
+            i -= 1;
+            const seg_index = self.pheaders_offset_order[i + edge.offset_index + 1];
+            try shift_forward(self.parse_source, offsets[seg_index], offsets[seg_index] + fileszs[seg_index], adjustments.items[i]);
+            try self.set_phdr_field(seg_index, offsets[seg_index] + adjustments.items[i], "p_offset");
         }
-        if (!edge.is_end) {
-            try shift_forward(self.parse_source, first_prog_header.p_offset, first_prog_header.p_offset + first_prog_header.p_filesz, size);
-            try self.set_phdr_field(edge.index, first_prog_header.p_vaddr - size, "p_vaddr");
-        }
-        try self.set_phdr_field(edge.index, first_prog_header.p_filesz + size, "p_filesz");
-        try self.set_phdr_field(edge.offset_index, first_prog_header.p_memsz + size, "p_memsz");
+        try self.set_phdr_field(index, fileszs[index] + size, "p_filesz");
+        try self.set_phdr_field(index, memszs[index] + size, "p_memsz");
+        // if (size - (offsets[index] - new_offset) <= 0)
+        //
+        // if (!edge.is_end) {
+        //     const temp = if ((aligns[index] != 0) and ((size % aligns[index]) != 0)) (aligns[index] - (size % aligns[index])) else 0;
+        //     if (offsets[index] > size + temp + if (edge.offset_index == 0) 0 else (offsets[self.pheaders_offset_order[edge.offset_index - 1]])) {
+        //         try self.set_phdr_field(index, offsets[index] - size - temp, "p_offset");
+        //         try self.set_phdr_field(index, fileszs[index] + size, "p_filesz");
+        //         try self.set_phdr_field(index, memszs[index] + size, "p_memsz");
+        //         return;
+        //     }
+        // }
+        // if (edge.offset_index != self.pheaders_offset_order.len - 1) {
+        //     var adjustments = try gpa.alloc(self.pheaders_offset_order.len - edge.offset_index - 1);
+        //     defer gpa.free(adjustments);
+        //     // NOTE: technically you can look around the segment before doing anything to check if there is already place for a cave.
+        //     const temp = if (edge.is_end) {
+        //         size;
+        //     } else {
+        //         size + aligns[index] - (size % aligns[index]);
+        //     };
+        //     const existing_gap = (offsets[self.pheaders_offset_order[edge.offset_index + 1]] - offsets[index] - fileszs[index]);
+        //     adjustments[0] = if (temp > existing_gap) temp - existing_gap else 0;
+        //     if (adjustments[0] != 0) {
+        //         @memset(adjustments[1..], 0);
+        //         for (edge.offset_index + 2..self.pheaders_offset_order.len) |i| {
+        //             adjustments[i] = adjustments[i - 1];
+        //             index = self.pheaders_offset_order[i];
+        //             const offset = offsets[index];
+        //             const p_align = aligns[index];
+        //             const prev_off_end = if (i == 0) 0 else (offsets[self.pheaders_offset_order[i - 1]] + fileszs[self.pheaders_offset_order[i - 1]]);
+        //             if (adjustments[i - 1] > (offset - prev_off_end)) adjustments[i] -= (offset - prev_off_end) else break;
+        //             if ((p_align != 0) and ((adjustments[i] % p_align) != 0)) adjustments[i] += p_align - (adjustments[i] % p_align);
+        //         }
+        //
+        //     }
+        // }
+        // if (!edge.is_end) {
+        //     try shift_forward(self.parse_source, first_prog_header.p_offset, first_prog_header.p_offset + first_prog_header.p_filesz, size);
+        //     try self.set_phdr_field(edge.index, first_prog_header.p_vaddr - size, "p_vaddr");
+        // }
         // TODO: adjust sections as well (and maybe debug info?)
     }
 };
