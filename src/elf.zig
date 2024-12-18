@@ -43,6 +43,7 @@ pub const PFlags: type = packed struct(u32) {
 
 const Error = error{
     EdgeNotFound,
+    InvalidEdge,
 };
 
 fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) !void {
@@ -119,7 +120,7 @@ pub const ElfModder: type = struct {
 
     // Get an identifier for the location within the file where additional data could be inserted.
     // only considers places which do not require generating an extra segment.
-    pub fn get_cave_option(self: Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
+    pub fn get_cave_option(self: *Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
         var prog_headers = self.header.program_header_iterator(self.parse_source);
         var prev_mem_end: u64 = 0;
         var maybe_curr_prog_header = try prog_headers.next();
@@ -151,35 +152,52 @@ pub const ElfModder: type = struct {
         return null;
     }
 
+    fn set_phdr_field(self: *Self, index: usize, val: u64, comptime field_name: []const u8) !void {
+        try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
+        if (self.header.is_64) {
+            const T = std.meta.fieldInfo(std.elf.Elf64_Phdr, @field(std.meta.FieldEnum(std.elf.Elf64_Phdr), field_name)).type;
+            var temp: T = @intCast(val);
+            temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
+            try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
+            // TODO: should be checking this.
+            _ = try self.parse_source.write(&std.mem.toBytes(temp));
+        } else {
+            const T = std.meta.fieldInfo(std.elf.Elf32_Phdr, @field(std.meta.FieldEnum(std.elf.Elf32_Phdr), field_name)).type;
+            var temp: T = @intCast(val);
+            temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
+            try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Phdr, field_name));
+            // TODO: should be checking this.
+            _ = try self.parse_source.write(&std.mem.toBytes(temp));
+        }
+    }
+
     // NOTE: Doing this the really dumb way for now.
-    pub fn create_cave(self: Self, size: u64, edge: SegEdge) !void {
+    pub fn create_cave(self: *Self, size: u64, edge: SegEdge) !void {
         var prog_headers = self.header.program_header_iterator(self.parse_source);
-        var needed_adjust = size;
-        prog_headers.index = edge.index + 1;
-        for (edge.index..self.header.phnum) |x| {
+        prog_headers.index = edge.index;
+        const first_prog_header = try prog_headers.next() orelse return Error.InvalidEdge;
+        var prev_off_end = first_prog_header.p_offset + first_prog_header.p_filesz;
+        for (0..self.header.phnum - edge.index) |x| {
             const i = self.header.phnum - x;
-            needed_adjust = size;
+            var needed_adjust = size;
+            prog_headers.index = edge.index + 1;
             while (try prog_headers.next()) |*prog_header| {
+                if (prev_off_end + needed_adjust < prog_header.p_offset) break else needed_adjust -= (prog_header.p_offset - prev_off_end);
                 if ((prog_header.p_align != 0) and ((needed_adjust % prog_header.p_align) != 0)) needed_adjust += prog_header.p_align - (needed_adjust % prog_header.p_align);
+                prev_off_end = prog_header.p_offset + prog_header.p_filesz;
                 if (prog_headers.index == i) {
                     try shift_forward(self.parse_source, prog_header.p_offset, prog_header.p_offset + prog_header.p_filesz, needed_adjust);
-                    try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * prog_headers.index);
-                    if (self.header.is_64) {
-                        var new_off: std.elf.Elf64_Off = prog_header.p_offset + needed_adjust;
-                        new_off = if (self.header.endian != native_endian) @as(std.elf.Elf64_Off, @byteSwap(new_off)) else new_off;
-                        try self.parse_source.seekTo(@offsetOf(std.elf.Elf64_Phdr, "p_offset"));
-                        // TODO: should be checking this.
-                        _ = try self.parse_source.write(&std.mem.toBytes(new_off));
-                    } else {
-                        var new_off: std.elf.Elf32_Off = @intCast(prog_header.p_offset + needed_adjust);
-                        new_off = if (self.header.endian != native_endian) @as(std.elf.Elf32_Off, @byteSwap(new_off)) else new_off;
-                        try self.parse_source.seekTo(@offsetOf(std.elf.Elf32_Phdr, "p_offset"));
-                        _ = try self.parse_source.write(&std.mem.toBytes(new_off));
-                    }
+                    try self.set_phdr_field(prog_headers.index, prog_header.p_offset + needed_adjust, "p_offset");
                     break;
                 }
             }
         }
+        if (!edge.is_end) {
+            try shift_forward(self.parse_source, first_prog_header.p_offset, first_prog_header.p_offset + first_prog_header.p_filesz, size);
+            try self.set_phdr_field(edge.index, first_prog_header.p_vaddr - size, "p_vaddr");
+        }
+        try self.set_phdr_field(edge.index, first_prog_header.p_filesz + size, "p_filesz");
+        try self.set_phdr_field(edge.index, first_prog_header.p_memsz + size, "p_memsz");
         // TODO: adjust sections as well (and maybe debug info?)
     }
 };
