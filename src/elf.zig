@@ -181,7 +181,6 @@ pub const ElfModder: type = struct {
                 .offset_index = i,
                 .is_end = true,
             };
-            std.debug.print("{x} > ({x} + (if ({} == 0) 0 else ({x} + {x}))", .{ p_vaddrs[index], wanted_size, index, p_vaddrs[index - 1], p_memszs[index - 1] });
             if (p_vaddrs[index] > (wanted_size + (if (index == 0) 0 else (p_vaddrs[index - 1] + p_memszs[index - 1])))) return SegEdge{
                 .offset_index = i,
                 .is_end = false,
@@ -257,6 +256,8 @@ pub const ElfModder: type = struct {
     fn create_start_cave(self: *Self, gpa: std.mem.Allocator, size: u64, seg_offset_index: usize) !void {
         const aligns = self.pheaders.items(Phdr64Fields.p_align);
         const offsets = self.pheaders.items(Phdr64Fields.p_offset);
+        const vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
+        const paddrs = self.pheaders.items(Phdr64Fields.p_paddr);
         const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);
         const memszs = self.pheaders.items(Phdr64Fields.p_memsz);
         const index = self.pheaders_offset_order[seg_offset_index];
@@ -300,6 +301,9 @@ pub const ElfModder: type = struct {
         }
         try self.set_phdr_field(index, fileszs[index] + size, "p_filesz");
         try self.set_phdr_field(index, memszs[index] + size, "p_memsz");
+        try self.set_phdr_field(index, vaddrs[index] - size, "p_vaddr");
+        // NOTE: not really sure about the following line.
+        try self.set_phdr_field(index, paddrs[index] - size, "p_paddr");
         try self.set_phdr_field(index, new_offset, "p_offset");
     }
 
