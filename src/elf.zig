@@ -48,7 +48,7 @@ const Error = error{
 };
 
 fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) !void {
-    if (start == end) return;
+    if ((start == end) or (amt == 0)) return;
     std.debug.assert(start < end);
     var buff: [1024]u8 = undefined;
     const shift_start: u64 = blk: {
@@ -115,8 +115,9 @@ const Phdr64Fields = std.meta.FieldEnum(std.elf.Elf64_Phdr);
 const Phdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Phdr);
 
 fn offset_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
-    return pheaders.items(Phdr64Fields.p_offset)[lhs] < pheaders.items(Phdr64Fields.p_offset)[rhs];
+    return (pheaders.items(Phdr64Fields.p_offset)[lhs] < pheaders.items(Phdr64Fields.p_offset)[rhs]) or ((pheaders.items(Phdr64Fields.p_offset)[lhs] == pheaders.items(Phdr64Fields.p_offset)[rhs]) and (pheaders.items(Phdr64Fields.p_filesz)[lhs] > pheaders.items(Phdr64Fields.p_filesz)[rhs]));
 }
+// TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
 fn vaddr_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
     return pheaders.items(Phdr64Fields.p_vaddr)[lhs] < pheaders.items(Phdr64Fields.p_vaddr)[rhs];
 }
@@ -126,6 +127,9 @@ pub const ElfModder: type = struct {
     pheaders: std.MultiArrayList(std.elf.Elf64_Phdr),
     pheaders_offset_order: []usize,
     pheaders_vaddr_order: []usize,
+    // TODO:: dont really need this, can just calculate it as I go by.
+    top_level_segments: []usize,
+    adjustments: []usize,
     parse_source: *std.io.StreamSource,
 
     const Self = @This();
@@ -139,6 +143,8 @@ pub const ElfModder: type = struct {
             count += 1;
             try pheaders.append(gpa, prog_header);
         }
+        const offsets = pheaders.items(Phdr64Fields.p_offset);
+        const fileszs = pheaders.items(Phdr64Fields.p_filesz);
         var pheaders_offset_order = try gpa.alloc(usize, count);
         var pheaders_vaddr_order = try gpa.alloc(usize, count);
         for (0..count) |i| {
@@ -147,11 +153,38 @@ pub const ElfModder: type = struct {
         }
         std.sort.pdq(usize, pheaders_offset_order, &pheaders, offset_lessThanFn);
         std.sort.pdq(usize, pheaders_vaddr_order, &pheaders, vaddr_lessThanFn);
+        std.debug.assert(pheaders_offset_order.len != 0);
+        var containing_index = pheaders_offset_order[0];
+        var containing_count = 1;
+        std.debug.assert(offsets[containing_index] == 0);
+        for (pheaders_offset_order[1..]) |index| {
+            const offset = offsets[index];
+            if (offset < (offsets[containing_index] + fileszs[containing_index])) {
+                std.debug.assert((offset + fileszs[index]) < (offsets[containing_index] + fileszs[containing_index]));
+            } else {
+                containing_index = index;
+                containing_count += 1;
+            }
+        }
+        const top_level_segments = try gpa.alloc(usize, containing_count);
+        containing_count = 0;
+        containing_index = pheaders_offset_order[0];
+        top_level_segments[containing_count] = containing_index;
+        for (pheaders_offset_order[1..]) |index| {
+            const offset = offsets[index];
+            if (offset >= (offsets[containing_index] + fileszs[containing_index])) {
+                containing_index = index;
+                top_level_segments[containing_count] = containing_index;
+                containing_count += 1;
+            }
+        }
         return Self{
             .header = header,
             .pheaders = pheaders,
             .pheaders_offset_order = pheaders_offset_order,
             .pheaders_vaddr_order = pheaders_vaddr_order,
+            .top_level_segments = top_level_segments,
+            .adjustments = try gpa.alloc(usize, count),
             .parse_source = parse_source,
         };
     }
@@ -159,12 +192,16 @@ pub const ElfModder: type = struct {
     pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
         gpa.free(self.pheaders_offset_order);
         gpa.free(self.pheaders_vaddr_order);
+        gpa.free(self.top_level_segments);
+        gpa.free(self.adjustments);
         self.pheaders.deinit(gpa);
     }
 
     // Get an identifier for the location within the file where additional data could be inserted.
     // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
     pub fn get_cave_option(self: *Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
+        // NOTE: only dealing with PT_LOAD for now because the other segments frequently overlap with it which is annoyingg.
+        std.debug.assert(p_type == PType.PT_LOAD);
         const p_types = self.pheaders.items(Phdr64Fields.p_type);
         const p_flagss = self.pheaders.items(Phdr64Fields.p_flags);
         const p_vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
@@ -225,29 +262,28 @@ pub const ElfModder: type = struct {
         const memszs = self.pheaders.items(Phdr64Fields.p_memsz);
         const index = self.pheaders_offset_order[seg_offset_index];
 
-        var adjustments = std.ArrayListUnmanaged(usize){};
-        defer adjustments.deinit(gpa);
         var needed_size = size;
         var off_idx = seg_offset_index + 1;
         std.debug.print("first seg - {}\n", .{index});
         while (off_idx < self.pheaders_offset_order.len) : (off_idx += 1) {
             const seg_index = self.pheaders_offset_order[off_idx];
             const prev_seg_index = self.pheaders_offset_order[off_idx - 1];
+            std.debug.print("{x} - ({x} + {x})\n", .{ offsets[seg_index], offsets[prev_seg_index], fileszs[prev_seg_index] });
             const existing_gap = offsets[seg_index] - (offsets[prev_seg_index] + fileszs[prev_seg_index]);
             std.debug.print("existing_gap - {X} ({X} - ({X} + {X})), needed_size - {X}\n", .{ existing_gap, offsets[seg_index], offsets[prev_seg_index], fileszs[prev_seg_index], needed_size });
             if (needed_size < existing_gap) break;
             needed_size -= existing_gap;
             if ((aligns[seg_index] != 0) and ((needed_size % aligns[seg_index]) != 0)) needed_size += aligns[seg_index] - (needed_size % aligns[seg_index]);
-            try adjustments.append(gpa, needed_size);
+            self.adjustments[off_idx - (seg_offset_index + 1)] = needed_size;
         }
-        var i = adjustments.items.len;
-        std.debug.print("{any}\n", .{adjustments.items});
+        var i = self.pheaders_offset_order.len - (seg_offset_index + 1);
+        std.debug.print("{any}\n", .{self.adjustments[0..i]});
         while (i > 0) {
             i -= 1;
             const seg_index = self.pheaders_offset_order[i + seg_offset_index + 1];
-            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[seg_index], offsets[seg_index] + fileszs[seg_index], adjustments.items[i] });
-            try shift_forward(self.parse_source, offsets[seg_index], offsets[seg_index] + fileszs[seg_index], adjustments.items[i]);
-            try self.set_phdr_field(seg_index, offsets[seg_index] + adjustments.items[i], "p_offset");
+            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[seg_index], offsets[seg_index] + fileszs[seg_index], self.adjustments[i] });
+            try shift_forward(self.parse_source, offsets[seg_index], offsets[seg_index] + fileszs[seg_index], self.adjustments[i]);
+            try self.set_phdr_field(seg_index, offsets[seg_index] + self.adjustments[i], "p_offset");
         }
         try self.set_phdr_field(index, fileszs[index] + size, "p_filesz");
         try self.set_phdr_field(index, memszs[index] + size, "p_memsz");
@@ -276,8 +312,6 @@ pub const ElfModder: type = struct {
             else
                 (aligns[index] + align_offset)) - (prev_off_end % aligns[index]));
         var needed_size = if (new_offset < offsets[index]) size - (offsets[index] - new_offset) else size + (new_offset - offsets[index]);
-        var adjustments = std.ArrayListUnmanaged(usize){};
-        defer adjustments.deinit(gpa);
         var off_idx = seg_offset_index + 1;
         std.debug.print("first seg - {}\n", .{index});
         while (off_idx < self.pheaders_offset_order.len) : (off_idx += 1) {
@@ -288,17 +322,19 @@ pub const ElfModder: type = struct {
             if (needed_size < existing_gap) break;
             needed_size -= existing_gap;
             if ((aligns[seg_index] != 0) and ((needed_size % aligns[seg_index]) != 0)) needed_size += aligns[seg_index] - (needed_size % aligns[seg_index]);
-            try adjustments.append(gpa, needed_size);
+            self.adjustments[off_idx - (seg_offset_index + 1)] = needed_size;
         }
-        var i = adjustments.items.len;
-        std.debug.print("{any}\n", .{adjustments.items});
+        var i = self.pheaders_offset_order.len - (seg_offset_index + 1);
+        std.debug.print("{any}\n", .{self.adjustments[0..i]});
         while (i > 0) {
             i -= 1;
             const seg_index = self.pheaders_offset_order[i + seg_offset_index + 1];
-            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[seg_index], offsets[seg_index] + fileszs[seg_index], adjustments.items[i] });
-            try shift_forward(self.parse_source, offsets[seg_index], offsets[seg_index] + fileszs[seg_index], adjustments.items[i]);
-            try self.set_phdr_field(seg_index, offsets[seg_index] + adjustments.items[i], "p_offset");
+            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[seg_index], offsets[seg_index] + fileszs[seg_index], self.adjustments[i] });
+            try shift_forward(self.parse_source, offsets[seg_index], offsets[seg_index] + fileszs[seg_index], self.adjustments[i]);
+            try self.set_phdr_field(seg_index, offsets[seg_index] + self.adjustments[i], "p_offset");
         }
+
+        try shift_forward(self.parse_source, offsets[index], offsets[index] + fileszs[index], new_offset + size - offsets[index]);
         try self.set_phdr_field(index, fileszs[index] + size, "p_filesz");
         try self.set_phdr_field(index, memszs[index] + size, "p_memsz");
         try self.set_phdr_field(index, vaddrs[index] - size, "p_vaddr");
