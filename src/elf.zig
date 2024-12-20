@@ -48,36 +48,41 @@ const Error = error{
 };
 
 fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) !void {
+    // if (start == end) return;
+    // std.debug.assert(start < end);
     var buff: [1024]u8 = undefined;
     const shift_start: u64 = blk: {
         if (end < (start + amt)) {
             const temp = try stream.getEndPos();
-            if ((start + amt) > temp) try stream.writer().writeByteNTimes(0, start + amt - temp);
+            if ((start + amt) > temp) {
+                try stream.seekTo(temp);
+                try stream.writer().writeByteNTimes(0, start + amt - temp);
+            }
             break :blk start;
         } else break :blk end - amt;
     };
     var pos = shift_start;
     while ((pos + buff.len) < end) : (pos += buff.len) {
         try stream.seekTo(pos);
-        _ = try stream.read(&buff);
+        std.debug.assert(try stream.read(&buff) == buff.len);
         try stream.seekTo(pos + amt);
-        _ = try stream.write(&buff);
+        std.debug.assert(try stream.write(&buff) == buff.len);
     }
     try stream.seekTo(pos);
-    _ = try stream.read(buff[0 .. end - pos]);
+    std.debug.assert(try stream.read(buff[0 .. end - pos]) == end - pos);
     try stream.seekTo(pos + amt);
-    _ = try stream.write(buff[0 .. end - pos]);
+    std.debug.assert(try stream.write(buff[0 .. end - pos]) == end - pos);
     pos = shift_start;
     while (pos > (start + buff.len)) : (pos -= buff.len) {
         try stream.seekTo(pos - buff.len);
-        _ = try stream.read(&buff);
+        std.debug.assert(try stream.read(&buff) == buff.len);
         try stream.seekTo(pos - buff.len + amt);
-        _ = try stream.write(&buff);
+        std.debug.assert(try stream.write(&buff) == buff.len);
     }
     try stream.seekTo(start);
-    _ = try stream.read(buff[0 .. pos - start]);
+    std.debug.assert(try stream.read(buff[0 .. pos - start]) == pos - start);
     try stream.seekTo(start + amt);
-    _ = try stream.write(buff[0 .. pos - start]);
+    std.debug.assert(try stream.write(buff[0 .. pos - start]) == pos - start);
 }
 
 test "test shift stream" {
@@ -190,18 +195,25 @@ pub const ElfModder: type = struct {
         try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
         if (self.header.is_64) {
             const T = std.meta.fieldInfo(std.elf.Elf64_Phdr, @field(Phdr64Fields, field_name)).type;
+            var temp_buf: [@sizeOf(T)]u8 = undefined;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
             // TODO: should be checking this.
-            _ = try self.parse_source.write(&std.mem.toBytes(temp));
+            std.debug.assert(try self.parse_source.read(&temp_buf) == @sizeOf(T));
+            std.debug.print("curr = {X}\n", .{temp_buf});
+            try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
+            try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
+            std.debug.print("writing {X} ({x} bytes) at {x}\n", .{ &std.mem.toBytes(temp), @sizeOf(T), try self.parse_source.getPos() });
+            std.debug.assert(try self.parse_source.write(&std.mem.toBytes(temp)) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(std.elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Phdr, field_name));
             // TODO: should be checking this.
-            _ = try self.parse_source.write(&std.mem.toBytes(temp));
+            std.debug.print("writing {X} ({x} bytes) at {x}\n", .{ &std.mem.toBytes(temp), @sizeOf(T), try self.parse_source.getPos() });
+            std.debug.assert(try self.parse_source.write(&std.mem.toBytes(temp)) == @sizeOf(T));
         }
         self.pheaders.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
     }
@@ -262,6 +274,7 @@ pub const ElfModder: type = struct {
         while (i > 0) {
             i -= 1;
             const seg_index = self.pheaders_offset_order[i + edge.offset_index + 1];
+            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[seg_index], offsets[seg_index] + fileszs[seg_index], adjustments.items[i] });
             try shift_forward(self.parse_source, offsets[seg_index], offsets[seg_index] + fileszs[seg_index], adjustments.items[i]);
             try self.set_phdr_field(seg_index, offsets[seg_index] + adjustments.items[i], "p_offset");
         }
