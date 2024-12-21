@@ -93,17 +93,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe_unit_tests.addLibraryPath(b.path("lib/libelf/"));
     exe_unit_tests.addLibraryPath(b.path("lib/capstone/"));
-    exe_unit_tests.addLibraryPath(b.path("lib/keystone-9.2.0/"));
-    exe_unit_tests.linkSystemLibrary2("keystone", .{});
-    exe_unit_tests.linkSystemLibrary2("elf", .{});
     exe_unit_tests.linkSystemLibrary2("capstone", .{});
-    exe_unit_tests.addIncludePath(b.path("include/libelf/"));
     exe_unit_tests.addIncludePath(b.path("include/capstone/"));
-    exe_unit_tests.addIncludePath(b.path("include/keystone/"));
     exe_unit_tests.linkLibC();
-    exe_unit_tests.linkLibCpp();
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 

@@ -1,5 +1,5 @@
 const std = @import("std");
-const elf = @import("elf.zig");
+const elf = @import("modelf.zig");
 
 fn arg_err(out: std.io.AnyWriter) !void {
     try out.print("MKPatch <file-to-patch> <file-offset>", .{});
