@@ -329,6 +329,7 @@ pub const ElfModder: type = struct {
         try self.set_phdr_field(idx, fileszs[idx] + size, "p_filesz");
         try self.set_phdr_field(idx, memszs[idx] + size, "p_memsz");
         if (!edge.is_end) {
+            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx] });
             try shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
             try self.set_phdr_field(idx, vaddrs[idx] - size, "p_vaddr");
             // NOTE: not really sure about the following line.
