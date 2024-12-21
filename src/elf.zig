@@ -115,7 +115,12 @@ const Phdr64Fields = std.meta.FieldEnum(std.elf.Elf64_Phdr);
 const Phdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Phdr);
 
 fn offset_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
-    return (pheaders.items(Phdr64Fields.p_offset)[lhs] < pheaders.items(Phdr64Fields.p_offset)[rhs]) or ((pheaders.items(Phdr64Fields.p_offset)[lhs] == pheaders.items(Phdr64Fields.p_offset)[rhs]) and (pheaders.items(Phdr64Fields.p_filesz)[lhs] > pheaders.items(Phdr64Fields.p_filesz)[rhs]));
+    return (pheaders.items(Phdr64Fields.p_offset)[lhs] < pheaders.items(Phdr64Fields.p_offset)[rhs]) or
+        ((pheaders.items(Phdr64Fields.p_offset)[lhs] == pheaders.items(Phdr64Fields.p_offset)[rhs]) and
+        (pheaders.items(Phdr64Fields.p_filesz)[lhs] > pheaders.items(Phdr64Fields.p_filesz)[rhs])) or
+        ((pheaders.items(Phdr64Fields.p_offset)[lhs] == pheaders.items(Phdr64Fields.p_offset)[rhs]) and
+        (pheaders.items(Phdr64Fields.p_filesz)[lhs] == pheaders.items(Phdr64Fields.p_filesz)[rhs]) and
+        (@as(PType, @enumFromInt(pheaders.items(Phdr64Fields.p_type)[lhs])) == PType.PT_LOAD));
 }
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
 fn vaddr_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
@@ -158,11 +163,15 @@ pub const ElfModder: type = struct {
         var containing_index = pheaders_offset_order[0];
         var containing_count: usize = 1;
         std.debug.assert(offsets[containing_index] == 0);
+        std.debug.print("{x} to {x} contains:\n", .{ offsets[containing_index], offsets[containing_index] + fileszs[containing_index] });
         for (pheaders_offset_order[1..]) |index| {
+            std.debug.print("{x} to {x} ", .{ offsets[index], offsets[index] + fileszs[index] });
             const offset = offsets[index];
             if (offset < (offsets[containing_index] + fileszs[containing_index])) {
-                std.debug.assert((offset + fileszs[index]) < (offsets[containing_index] + fileszs[containing_index]));
+                std.debug.print("contained\n", .{});
+                std.debug.assert((offset + fileszs[index]) <= (offsets[containing_index] + fileszs[containing_index]));
             } else {
+                std.debug.print("contains:\n", .{});
                 containing_index = index;
                 containing_count += 1;
             }
