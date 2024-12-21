@@ -29,6 +29,6 @@ pub fn main() !void {
     defer elf_modder.deinit(alloc);
     const option = try elf_modder.get_cave_option(wanted_size, elf.PType.PT_LOAD, elf.PFlags{ .PF_X = true, .PF_R = true }) orelse return find_cave_err(stdout.any());
     try stdout.print("found cave option {}\n", .{option});
-    try elf_modder.create_cave(alloc, wanted_size, option);
+    try elf_modder.create_cave(wanted_size, option);
     try stdout.print("cave created succussfully.\n", .{});
 }
