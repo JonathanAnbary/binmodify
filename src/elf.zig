@@ -292,8 +292,8 @@ pub const ElfModder: type = struct {
         const memszs = self.pheaders.items(Phdr64Fields.p_memsz);
         const idx = self.pheaders_offset_order[self.top_segs[edge.top_idx]];
 
-        const new_offset: ?u64 = if (edge.is_end) null else self.calc_new_offset(edge.top_idx, size);
-        var needed_size = if (edge.is_end) size else if (new_offset.? < offsets[idx]) size - (offsets[idx] - new_offset.?) else size + (new_offset.? - offsets[idx]);
+        const new_offset: u64 = if (edge.is_end) offsets[idx] else self.calc_new_offset(edge.top_idx, size);
+        var needed_size = if (edge.is_end) size else if (new_offset < offsets[idx]) size - (offsets[idx] - new_offset) else size + (new_offset - offsets[idx]);
 
         var top_idx = edge.top_idx + 1;
         std.debug.print("first seg - {}\n", .{idx});
@@ -302,7 +302,6 @@ pub const ElfModder: type = struct {
             const seg_index = self.pheaders_offset_order[offset_seg_index];
             const prev_offset_seg_index = self.top_segs[top_idx - 1];
             const prev_seg_index = self.pheaders_offset_order[prev_offset_seg_index];
-            std.debug.print("{x} - ({x} + {x})\n", .{ offsets[seg_index], offsets[prev_seg_index], fileszs[prev_seg_index] });
             const existing_gap = offsets[seg_index] - (offsets[prev_seg_index] + fileszs[prev_seg_index]);
             std.debug.print("existing_gap - {X} ({X} - ({X} + {X})), needed_size - {X}\n", .{ existing_gap, offsets[seg_index], offsets[prev_seg_index], fileszs[prev_seg_index], needed_size });
             if (needed_size < existing_gap) break;
@@ -330,11 +329,11 @@ pub const ElfModder: type = struct {
         try self.set_phdr_field(idx, fileszs[idx] + size, "p_filesz");
         try self.set_phdr_field(idx, memszs[idx] + size, "p_memsz");
         if (!edge.is_end) {
-            try shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset.? + size - offsets[idx]);
+            try shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
             try self.set_phdr_field(idx, vaddrs[idx] - size, "p_vaddr");
             // NOTE: not really sure about the following line.
             try self.set_phdr_field(idx, paddrs[idx] - size, "p_paddr");
-            try self.set_phdr_field(idx, new_offset.?, "p_offset");
+            try self.set_phdr_field(idx, new_offset, "p_offset");
         }
 
         // TODO: adjust sections as well (and maybe debug info?)
