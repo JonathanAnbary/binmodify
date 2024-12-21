@@ -163,15 +163,11 @@ pub const ElfModder: type = struct {
         var containing_index = pheaders_offset_order[0];
         var containing_count: usize = 1;
         std.debug.assert(offsets[containing_index] == 0);
-        std.debug.print("{x} to {x} contains:\n", .{ offsets[containing_index], offsets[containing_index] + fileszs[containing_index] });
         for (pheaders_offset_order[1..]) |index| {
-            std.debug.print("{x} to {x} ", .{ offsets[index], offsets[index] + fileszs[index] });
             const offset = offsets[index];
             if (offset < (offsets[containing_index] + fileszs[containing_index])) {
-                std.debug.print("contained\n", .{});
                 std.debug.assert((offset + fileszs[index]) <= (offsets[containing_index] + fileszs[containing_index]));
             } else {
-                std.debug.print("contains:\n", .{});
                 containing_index = index;
                 containing_count += 1;
             }
@@ -251,10 +247,8 @@ pub const ElfModder: type = struct {
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
             // TODO: should be checking this.
             std.debug.assert(try self.parse_source.read(&temp_buf) == @sizeOf(T));
-            std.debug.print("curr = {X}\n", .{temp_buf});
             try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
-            std.debug.print("writing {X} ({x} bytes) at {x}\n", .{ &std.mem.toBytes(temp), @sizeOf(T), try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&std.mem.toBytes(temp)) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(std.elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
@@ -262,7 +256,6 @@ pub const ElfModder: type = struct {
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Phdr, field_name));
             // TODO: should be checking this.
-            std.debug.print("writing {X} ({x} bytes) at {x}\n", .{ &std.mem.toBytes(temp), @sizeOf(T), try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&std.mem.toBytes(temp)) == @sizeOf(T));
         }
         self.pheaders.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
@@ -305,14 +298,12 @@ pub const ElfModder: type = struct {
         var needed_size = if (edge.is_end) size else if (new_offset < offsets[idx]) size - (offsets[idx] - new_offset) else size + (new_offset - offsets[idx]);
 
         var top_idx = edge.top_idx + 1;
-        std.debug.print("first seg - {}\n", .{idx});
         while (top_idx < self.top_segs.len) : (top_idx += 1) {
             const offset_seg_index = self.top_segs[top_idx];
             const seg_index = self.pheaders_offset_order[offset_seg_index];
             const prev_offset_seg_index = self.top_segs[top_idx - 1];
             const prev_seg_index = self.pheaders_offset_order[prev_offset_seg_index];
             const existing_gap = offsets[seg_index] - (offsets[prev_seg_index] + fileszs[prev_seg_index]);
-            std.debug.print("existing_gap - {X} ({X} - ({X} + {X})), needed_size - {X}\n", .{ existing_gap, offsets[seg_index], offsets[prev_seg_index], fileszs[prev_seg_index], needed_size });
             if (needed_size < existing_gap) break;
             needed_size -= existing_gap;
             // TODO: might be the case that I should be looking at the maximum alignment of all contained segments here.
@@ -320,13 +311,11 @@ pub const ElfModder: type = struct {
             self.adjustments[top_idx - (edge.top_idx + 1)] = needed_size;
         }
         var i = self.top_segs.len - (edge.top_idx + 1);
-        std.debug.print("{any}\n", .{self.adjustments[0..i]});
         while (i > 0) {
             i -= 1;
             const top_index = i + edge.top_idx + 1;
             const top_off_idx = self.top_segs[top_index];
             const top_seg_idx = self.pheaders_offset_order[top_off_idx];
-            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[top_seg_idx], offsets[top_seg_idx] + fileszs[top_seg_idx], self.adjustments[i] });
             try shift_forward(self.parse_source, offsets[top_seg_idx], offsets[top_seg_idx] + fileszs[top_seg_idx], self.adjustments[i]);
             const final_off_idx = if ((top_index + 1) == self.top_segs.len) self.pheaders_offset_order.len else self.top_segs[top_index + 1];
             for (top_off_idx..final_off_idx) |seg_offset_index| {
@@ -334,10 +323,7 @@ pub const ElfModder: type = struct {
                 try self.set_phdr_field(seg_index, offsets[seg_index] + self.adjustments[i], "p_offset");
             }
         }
-        std.debug.print("finished shifting forward\n", .{});
         if (!edge.is_end) {
-            std.debug.print("offsets[{}] = {x}, fileszs[{}] = {x}, new_offset = {x}\n", .{ idx, offsets[idx], idx, fileszs[idx], new_offset });
-            std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx] });
             try shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
             try self.set_phdr_field(idx, vaddrs[idx] - size, "p_vaddr");
             // NOTE: not really sure about the following line.
