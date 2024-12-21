@@ -1,5 +1,5 @@
 const std = @import("std");
-const elf = @import("elf.zig");
+const modelf = @import("modelf.zig");
 const arch = @import("arch.zig");
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
 const ctl_asm = @import("ctl_asm.zig");
@@ -11,39 +11,43 @@ const FileType = enum {
     PE,
 };
 
-pub const PatcherUnmanged = struct {
+pub const Patcher = struct {
     to_patch: std.fs.File,
     ftype: FileType,
     farch: arch.Arch,
-    file_handler: 
+    modder: modelf.ElfModder,
+    ctl_assembler: ctl_asm.CtlFlowAssembler,
     // mode may be something that changes between patches, not sure about it.
     fmode: arch.Mode,
     fendian: ?arch.Endian,
-    patches: std.AutoHashMapUnmanaged(u64, []u8),
 
     const Self = @This();
 
-    pub fn init(to_patch: std.fs.File, ftype: FileType, farch: arch.Arch, fmode: arch.Mode, fendian: ?arch.Endian) Self {
+    pub fn init(gpa: std.mem.Allocator, to_patch: std.fs.File, ftype: FileType, farch: arch.Arch, fmode: arch.Mode, fendian: ?arch.Endian) Self {
+        std.debug.assert(ftype == FileType.Elf);
         return Self{
             .to_patch = to_patch,
-            .type = ftype,
-            .arch = farch,
+            .ftype = ftype,
+            .farch = farch,
+            .modder = try modelf.ElfModder.init(gpa, std.io.StreamSource{ .file = to_patch }),
+            .ctl_assembler = ctl_asm.CtlFlowAssembler.init(farch, fmode, fendian),
             .mode = fmode,
             .endian = fendian,
-            .patches = std.AutoHashMapUnmanaged(u64, []u8){},
         };
     }
 
-    // adds a patch to the map of staged patches, patches are not applied, until apply patches is called.
-    pub fn add_patch(self: *Self, alloc: std.mem.Allocator, off: u64, patch: []u8) !void {
-        try self.patches.put(alloc, off, patch);
+    pub fn pure_patch(self: *Self, addr: u64, patch: []const u8) !void {
+        const offsets = self.modder.pheaders.items(modelf.Phdr64Fields.p_offset);
+        const fileszs = self.modder.pheaders.items(modelf.Phdr64Fields.p_filesz);
+        const vaddrs = self.modder.pheaders.items(modelf.Phdr64Fields.p_vaddr);
+        const cave_option = (try self.modder.get_cave_option(patch.len, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
+        const seg_idx = self.modder.pheaders_offset_order[self.modder.top_segs[cave_option.top_idx]];
+        try self.modder.create_cave(patch.len, cave_option);
+        const cave_off = offsets[seg_idx] + if (cave_option.is_end) fileszs[seg_idx] - patch.len else 0;
+        const cave_addr = vaddrs[seg_idx] + cave_off;
+        var buf: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW]u8 = undefined;
+        const ctl_size = self.ctl_assembler.assemble_ctl_transfer(cave_addr, addr, &buf);
     }
-
-    pub fn remove_patch(self: *Self, off: u64) bool {
-        return self.patches.remove(off);
-    }
-
-    pub fn get_area(self: *Self) void {}
 };
 
 pub fn mk_patch(
@@ -60,7 +64,6 @@ pub fn mk_patch(
     }
     defer _ = capstone.cs_close(&csh);
     const ctlfh = try ctl_asm.CtlFlowAssembler.init(arch, mode, endian);
-
 
     const test_patch = &[_]u8{ 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
     var dst: usize = undefined;

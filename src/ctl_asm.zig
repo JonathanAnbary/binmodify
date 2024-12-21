@@ -44,7 +44,7 @@ pub const CtlFlowAssembler: type = struct {
         };
     }
 
-    pub fn assemble_ctl_transfer(self: *const Self, target: u64, addr: u64, buf: []u8) ![]u8 {
+    pub fn assemble_ctl_transfer(self: *const Self, target: u64, addr: u64, buf: []u8) !u8 {
         const ctl_flow_insn = ARCH_TO_CTL_FLOW.get(self.arch).?;
         std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
         const target_op_desc = self.target_operand_bitrange();
@@ -54,7 +54,7 @@ pub const CtlFlowAssembler: type = struct {
             self.endian orelse .little,
             buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8],
         );
-        return buf[0..ctl_flow_insn.len];
+        return ctl_flow_insn.len;
     }
 
     fn target_operand_bitrange(self: *const Self) OpDesc {
@@ -111,6 +111,15 @@ pub const CtlFlowAssembler: type = struct {
         .HEXAGON = null,
         .EVM = null,
     });
+
+    pub const MAX_CTL_FLOW = blk: {
+        var iter = ARCH_TO_CTL_FLOW.iterator();
+        var max: u8 = 0;
+        for (iter.next()) |curr_arch| {
+            if (ARCH_TO_CTL_FLOW.get(curr_arch).?.len > max) max = ARCH_TO_CTL_FLOW.get(curr_arch).?.len;
+        }
+        break :blk max;
+    };
 
     const OpDesc: type = struct {
         off: u8,

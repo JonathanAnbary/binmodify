@@ -109,8 +109,8 @@ pub const SegEdge: type = struct {
     is_end: bool,
 };
 
-const Phdr64Fields = std.meta.FieldEnum(std.elf.Elf64_Phdr);
-const Phdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Phdr);
+pub const Phdr64Fields = std.meta.FieldEnum(std.elf.Elf64_Phdr);
+pub const Phdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Phdr);
 
 fn offset_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
     return (pheaders.items(Phdr64Fields.p_offset)[lhs] < pheaders.items(Phdr64Fields.p_offset)[rhs]) or

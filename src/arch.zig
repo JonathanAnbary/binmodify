@@ -4,6 +4,7 @@ const capstone = @cImport(@cInclude("capstone/capstone.h"));
 pub const Error: type = error{
     ArchNotEndianable,
     ArchModeMismatch,
+    NoFreeSpace,
 };
 
 pub const Arch: type = enum(u4) {
