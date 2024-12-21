@@ -326,9 +326,8 @@ pub const ElfModder: type = struct {
             }
         }
         std.debug.print("finished shifting forward\n", .{});
-        try self.set_phdr_field(idx, fileszs[idx] + size, "p_filesz");
-        try self.set_phdr_field(idx, memszs[idx] + size, "p_memsz");
         if (!edge.is_end) {
+            std.debug.print("offsets[{}] = {x}, fileszs[{}] = {x}, new_offset = {x}\n", .{ idx, offsets[idx], idx, fileszs[idx], new_offset });
             std.debug.print("shifting forward from {x} to {x} by {x}\n", .{ offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx] });
             try shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
             try self.set_phdr_field(idx, vaddrs[idx] - size, "p_vaddr");
@@ -336,6 +335,8 @@ pub const ElfModder: type = struct {
             try self.set_phdr_field(idx, paddrs[idx] - size, "p_paddr");
             try self.set_phdr_field(idx, new_offset, "p_offset");
         }
+        try self.set_phdr_field(idx, fileszs[idx] + size, "p_filesz");
+        try self.set_phdr_field(idx, memszs[idx] + size, "p_memsz");
 
         // TODO: adjust sections as well (and maybe debug info?)
     }
