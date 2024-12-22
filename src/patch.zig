@@ -47,6 +47,7 @@ pub const Patcher = struct {
         const cave_addr = vaddrs[seg_idx] + cave_off;
         var buf: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW]u8 = undefined;
         const ctl_size = self.ctl_assembler.assemble_ctl_transfer(cave_addr, addr, &buf);
+        self.to_patch.seekTo()
     }
 };
 

@@ -125,6 +125,10 @@ fn vaddr_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usiz
     return pheaders.items(Phdr64Fields.p_vaddr)[lhs] < pheaders.items(Phdr64Fields.p_vaddr)[rhs];
 }
 
+fn addr_compareFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: u64, rhs: usize) bool {
+    return rhs < pheaders.items(Phdr64Fields.p_vaddr)[lhs];
+}
+
 pub const ElfModder: type = struct {
     header: std.elf.Header,
     pheaders: std.MultiArrayList(std.elf.Elf64_Phdr),
@@ -332,6 +336,10 @@ pub const ElfModder: type = struct {
         try self.set_phdr_field(idx, memszs[idx] + size, "p_memsz");
 
         // TODO: adjust sections as well (and maybe debug info?)
+    }
+
+    pub fn addr_to_off(self: *Self, addr: u64) u64 {
+        std.sort.upperBound(usize, addr, self.pheaders_vaddr_order, self.pheaders, addr_compareFn);
     }
 };
 

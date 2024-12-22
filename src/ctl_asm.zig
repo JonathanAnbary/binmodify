@@ -44,12 +44,12 @@ pub const CtlFlowAssembler: type = struct {
         };
     }
 
-    pub fn assemble_ctl_transfer(self: *const Self, target: u64, addr: u64, buf: []u8) !u8 {
+    pub fn assemble_ctl_transfer(self: *const Self, from: u64, to: u64, buf: []u8) !u8 {
         const ctl_flow_insn = ARCH_TO_CTL_FLOW.get(self.arch).?;
         std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
         const target_op_desc = self.target_operand_bitrange();
         twos_complement(
-            self.calc_ctl_tranfer_op(target, addr),
+            self.calc_ctl_tranfer_op(to, from),
             target_op_desc.size,
             self.endian orelse .little,
             buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8],
