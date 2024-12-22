@@ -14,15 +14,15 @@ fn twos_complement(value: i128, bits: u16, endian: arch.Endian, buffer: []u8) vo
             break :blk @abs(value);
         }
     };
-    const save_buf: u8 = if (endian == .big) buffer[0] else buffer[bytes - 1];
+    const save_buf: u8 = if (endian == .Big) buffer[0] else buffer[bytes - 1];
     for (0..bytes) |i| {
-        buffer[if (endian == .big) bytes - i - 1 else i] = @intCast(temp & 0xff);
+        buffer[if (endian == .Big) bytes - i - 1 else i] = @intCast(temp & 0xff);
         temp >>= 8;
     }
     const one: u8 = 1;
     if (bits % 8 != 0) {
         for (bits % 8..8) |i| {
-            buffer[if (endian == .big) 0 else bytes - 1] |= save_buf & one << @intCast(i);
+            buffer[if (endian == .Big) 0 else bytes - 1] |= save_buf & one << @intCast(i);
         }
     }
 }
@@ -52,10 +52,10 @@ pub const CtlFlowAssembler: type = struct {
         twos_complement(
             self.calc_ctl_tranfer_op(to, from),
             target_op_desc.size,
-            self.endian orelse .little,
+            self.endian orelse .Little,
             buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8],
         );
-        return ctl_flow_insn.len;
+        return @intCast(ctl_flow_insn.len);
     }
 
     fn target_operand_bitrange(self: *const Self) OpDesc {
@@ -69,8 +69,9 @@ pub const CtlFlowAssembler: type = struct {
                 .ARM => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
                 else => unreachable,
             },
-            .AArch64 => switch (self.mode) {
-                .AArch64 => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
+            .AARCH64 => switch (self.mode) {
+                .AARCH64 => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
+                else => unreachable,
             },
             .MIPS => switch (self.mode) {
                 .MIPS64 => OpDesc{ .off = 0, .size = 26, .signedness = .unsigned },
@@ -90,8 +91,9 @@ pub const CtlFlowAssembler: type = struct {
                 .ARM => (target - (addr + 0x8)) >> 0x2,
                 else => unreachable,
             },
-            .AArch64 => switch (self.mode) {
-                .AArch64 => (target - addr) >> 0x2,
+            .AARCH64 => switch (self.mode) {
+                .AARCH64 => (target - addr) >> 0x2,
+                else => unreachable,
             },
             .MIPS => switch (self.mode) {
                 .MIPS64 => target >> 0x2,
@@ -101,23 +103,23 @@ pub const CtlFlowAssembler: type = struct {
         };
     }
 
-    pub const ARCH_TO_CTL_FLOW = std.EnumMap(arch.Arch, []const u8).init(std.enums.EnumFieldStruct(arch.Arch, ?[]const u8, null){
+    pub const ARCH_TO_CTL_FLOW = std.EnumMap(arch.Arch, []const u8).init(std.enums.EnumFieldStruct(arch.Arch, ?[]const u8, @as(?[]const u8, null)){
         .ARM = &[_]u8{ 0x00, 0x00, 0x00, 0xea },
-        .AArch64 = &[_]u8{ 0x00, 0x00, 0x00, 0x14 },
+        .AARCH64 = &[_]u8{ 0x00, 0x00, 0x00, 0x14 },
         .MIPS = &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },
         .X86 = &[_]u8{ 0xe9, 0x00, 0x00, 0x00, 0x00 },
         .PPC = &[_]u8{ 0x00, 0x00, 0x00, 0x48 },
         .SPARC = null,
-        .SYSTEMZ = null,
-        .HEXAGON = null,
+        .SYSZ = null,
+        .XCORE = null,
         .EVM = null,
     });
 
     pub const MAX_CTL_FLOW = blk: {
-        var iter = ARCH_TO_CTL_FLOW.iterator();
         var max: u8 = 0;
-        for (iter.next()) |curr_arch| {
-            if (ARCH_TO_CTL_FLOW.get(curr_arch).?.len > max) max = ARCH_TO_CTL_FLOW.get(curr_arch).?.len;
+        for (std.meta.fields(arch.Arch)) |curr_arch| {
+            const ctl_flow = ARCH_TO_CTL_FLOW.get(@enumFromInt(curr_arch.value)) orelse continue;
+            if (ctl_flow.len > max) max = ctl_flow.len;
         }
         break :blk max;
     };

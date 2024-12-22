@@ -39,6 +39,15 @@ pub const PFlags: type = packed struct(u32) {
     }
 };
 
+pub const ElfError = error{
+    InvalidElfMagic,
+    InvalidElfVersion,
+    InvalidElfEndian,
+    InvalidElfClass,
+    EndOfStream,
+    OutOfMemory,
+};
+
 pub const Error = error{
     EdgeNotFound,
     InvalidEdge,
@@ -46,9 +55,9 @@ pub const Error = error{
     OffsetNotLoaded,
     AddrNotMapped,
     NoMatchingOffset,
-};
+} || ElfError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError;
 
-fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) !void {
+fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) Error!void {
     if ((start == end) or (amt == 0)) return;
     std.debug.assert(start < end);
     var buff: [1024]u8 = undefined;
@@ -141,7 +150,7 @@ pub const ElfModder: type = struct {
 
     const Self = @This();
 
-    pub fn init(gpa: std.mem.Allocator, parse_source: *std.io.StreamSource) !Self {
+    pub fn init(gpa: std.mem.Allocator, parse_source: *std.io.StreamSource) Error!Self {
         var header = try std.elf.Header.read(parse_source);
         var pheaders = std.MultiArrayList(std.elf.Elf64_Phdr){};
         var prog_headers_iter = header.program_header_iterator(parse_source);
@@ -229,14 +238,14 @@ pub const ElfModder: type = struct {
         gpa.free(self.pheaders_offset_order);
         gpa.free(self.pheaders_vaddr_order);
         gpa.free(self.top_off_segs);
-        gpa.free(self.top_off_segs);
+        gpa.free(self.top_vaddr_segs);
         gpa.free(self.adjustments);
         self.pheaders.deinit(gpa);
     }
 
     // Get an identifier for the location within the file where additional data could be inserted.
     // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
-    pub fn get_cave_option(self: *const Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
+    pub fn get_cave_option(self: *const Self, wanted_size: u64, p_type: PType, p_flags: PFlags) Error!?SegEdge {
         // NOTE: only dealing with PT_LOAD for now because the other segments frequently overlap with it which is annoyingg.
         std.debug.assert(p_type == PType.PT_LOAD);
         const p_types = self.pheaders.items(Phdr64Fields.p_type);
@@ -267,7 +276,7 @@ pub const ElfModder: type = struct {
 
     // NOTE: field changes must NOT change the memory order or offset order!
     // TODO: consider what to do when setting the segment which holds the phdrtable itself.
-    fn set_phdr_field(self: *Self, index: usize, val: u64, comptime field_name: []const u8) !void {
+    fn set_phdr_field(self: *Self, index: usize, val: u64, comptime field_name: []const u8) Error!void {
         try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
         if (self.header.is_64) {
             const T = std.meta.fieldInfo(std.elf.Elf64_Phdr, @field(Phdr64Fields, field_name)).type;
@@ -313,7 +322,7 @@ pub const ElfModder: type = struct {
         return new_offset;
     }
     // TODO: consider what happens when the original filesz and memsz are unequal.
-    pub fn create_cave(self: *Self, size: u64, edge: SegEdge) !void {
+    pub fn create_cave(self: *Self, size: u64, edge: SegEdge) Error!void {
         // NOTE: moving around the pheader table sounds like a bad idea.
         std.debug.assert(edge.top_idx != 0);
         const aligns = self.pheaders.items(Phdr64Fields.p_align);
@@ -370,7 +379,7 @@ pub const ElfModder: type = struct {
         return lhs < self.pheaders.items(Phdr64Fields.p_vaddr)[self.pheaders_vaddr_order[rhs]];
     }
 
-    pub fn addr_to_off(self: *const Self, addr: u64) !u64 {
+    pub fn addr_to_off(self: *const Self, addr: u64) Error!u64 {
         const offsets = self.pheaders.items(Phdr64Fields.p_offset);
         const vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
         const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);
@@ -383,14 +392,14 @@ pub const ElfModder: type = struct {
     }
 
     pub fn addr_to_idx(self: *const Self, addr: u64) usize {
-        return self.pheaders_offset_order[self.top_vaddr_segs[std.sort.upperBound(usize, addr, self.top_vaddr_segs, self.pheaders, addr_lessThenFn)]];
+        return self.pheaders_offset_order[self.top_vaddr_segs[std.sort.upperBound(usize, addr, self.top_vaddr_segs, self, addr_lessThenFn)]];
     }
 
     fn off_lessThenFn(self: *const Self, lhs: u64, rhs: usize) bool {
         return lhs < self.pheaders.items(Phdr64Fields.p_offset)[self.pheaders_offset_order[rhs]];
     }
 
-    pub fn off_to_addr(self: *const Self, off: u64) !u64 {
+    pub fn off_to_addr(self: *const Self, off: u64) Error!u64 {
         const offsets = self.pheaders.items(Phdr64Fields.p_offset);
         const vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
         const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);

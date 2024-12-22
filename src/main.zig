@@ -25,9 +25,9 @@ pub fn main() !void {
     var stream = std.io.StreamSource{ .file = f };
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit() != std.heap.Check.ok) @panic("LEAKED");
+    defer if (gpa.deinit() != std.heap.Check.ok) unreachable;
     const alloc = gpa.allocator();
-    var patcher: patch.Patcher = patch.Patcher.init(alloc, &stream, patch.FileType.Elf, arch.Arch.X86, arch.Mode.MODE_64, null);
-    defer patcher.deinit(alloc);
+    var patcher: patch.Patcher = try patch.Patcher.init(alloc, &stream, patch.FileType.Elf, arch.Arch.X86, arch.Mode.MODE_64, null);
+    defer patcher.deinit(alloc) catch unreachable;
     try patcher.pure_patch(patch_addr, wanted_patch);
 }
