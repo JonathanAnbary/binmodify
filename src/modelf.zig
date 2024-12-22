@@ -39,10 +39,13 @@ pub const PFlags: type = packed struct(u32) {
     }
 };
 
-const Error = error{
+pub const Error = error{
     EdgeNotFound,
     InvalidEdge,
     InvalidHeader,
+    OffsetNotLoaded,
+    AddrNotMapped,
+    NoMatchingOffset,
 };
 
 fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) !void {
@@ -125,18 +128,14 @@ fn vaddr_lessThanFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usiz
     return pheaders.items(Phdr64Fields.p_vaddr)[lhs] < pheaders.items(Phdr64Fields.p_vaddr)[rhs];
 }
 
-fn addr_compareFn(pheaders: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: u64, rhs: usize) bool {
-    return rhs < pheaders.items(Phdr64Fields.p_vaddr)[lhs];
-}
-
 pub const ElfModder: type = struct {
     header: std.elf.Header,
     pheaders: std.MultiArrayList(std.elf.Elf64_Phdr),
     pheaders_offset_order: []usize,
     pheaders_vaddr_order: []usize,
-    // TODO: something similar for memory order.
     // TODO: dont really need this, can just calculate it as I go by.
-    top_segs: []usize,
+    top_off_segs: []usize,
+    top_vaddr_segs: []usize,
     adjustments: []usize,
     parse_source: *std.io.StreamSource,
 
@@ -153,6 +152,8 @@ pub const ElfModder: type = struct {
         }
         const offsets = pheaders.items(Phdr64Fields.p_offset);
         const fileszs = pheaders.items(Phdr64Fields.p_filesz);
+        const vaddrs = pheaders.items(Phdr64Fields.p_vaddr);
+        const memszs = pheaders.items(Phdr64Fields.p_memsz);
         var pheaders_offset_order = try gpa.alloc(usize, count);
         var pheaders_vaddr_order = try gpa.alloc(usize, count);
         for (0..count) |i| {
@@ -174,16 +175,41 @@ pub const ElfModder: type = struct {
                 containing_count += 1;
             }
         }
-        const top_segs = try gpa.alloc(usize, containing_count);
+        const top_off_segs = try gpa.alloc(usize, containing_count);
         containing_count = 0;
         containing_index = pheaders_offset_order[0];
-        top_segs[containing_count] = 0;
+        top_off_segs[containing_count] = 0;
         containing_count += 1;
         for (pheaders_offset_order[1..], 1..) |index, i| {
             const offset = offsets[index];
             if (offset >= (offsets[containing_index] + fileszs[containing_index])) {
                 containing_index = index;
-                top_segs[containing_count] = i;
+                top_off_segs[containing_count] = i;
+                containing_count += 1;
+            }
+        }
+        containing_index = pheaders_vaddr_order[0];
+        containing_count = 1;
+        std.debug.assert(vaddrs[containing_index] == 0);
+        for (pheaders_vaddr_order[1..]) |index| {
+            const vaddr = vaddrs[index];
+            if (vaddr < (vaddrs[containing_index] + memszs[containing_index])) {
+                std.debug.assert((vaddr + memszs[index]) <= (vaddrs[containing_index] + memszs[containing_index]));
+            } else {
+                containing_index = index;
+                containing_count += 1;
+            }
+        }
+        const top_vaddr_segs = try gpa.alloc(usize, containing_count);
+        containing_count = 0;
+        containing_index = pheaders_vaddr_order[0];
+        top_vaddr_segs[containing_count] = 0;
+        containing_count += 1;
+        for (pheaders_vaddr_order[1..], 1..) |index, i| {
+            const vaddr = vaddrs[index];
+            if (vaddr >= (vaddrs[containing_index] + memszs[containing_index])) {
+                containing_index = index;
+                top_vaddr_segs[containing_count] = i;
                 containing_count += 1;
             }
         }
@@ -192,7 +218,8 @@ pub const ElfModder: type = struct {
             .pheaders = pheaders,
             .pheaders_offset_order = pheaders_offset_order,
             .pheaders_vaddr_order = pheaders_vaddr_order,
-            .top_segs = top_segs,
+            .top_off_segs = top_off_segs,
+            .top_vaddr_segs = top_vaddr_segs,
             .adjustments = try gpa.alloc(usize, containing_count),
             .parse_source = parse_source,
         };
@@ -201,24 +228,25 @@ pub const ElfModder: type = struct {
     pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
         gpa.free(self.pheaders_offset_order);
         gpa.free(self.pheaders_vaddr_order);
-        gpa.free(self.top_segs);
+        gpa.free(self.top_off_segs);
+        gpa.free(self.top_off_segs);
         gpa.free(self.adjustments);
         self.pheaders.deinit(gpa);
     }
 
     // Get an identifier for the location within the file where additional data could be inserted.
     // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
-    pub fn get_cave_option(self: *Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
+    pub fn get_cave_option(self: *const Self, wanted_size: u64, p_type: PType, p_flags: PFlags) !?SegEdge {
         // NOTE: only dealing with PT_LOAD for now because the other segments frequently overlap with it which is annoyingg.
         std.debug.assert(p_type == PType.PT_LOAD);
         const p_types = self.pheaders.items(Phdr64Fields.p_type);
         const p_flagss = self.pheaders.items(Phdr64Fields.p_flags);
         const p_vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
         const p_memszs = self.pheaders.items(Phdr64Fields.p_memsz);
-        var i = self.top_segs.len;
+        var i = self.top_off_segs.len;
         while (i > 0) {
             i -= 1;
-            const off_idx = self.top_segs[i];
+            const off_idx = self.top_off_segs[i];
             const seg_idx = self.pheaders_offset_order[off_idx];
             if ((@as(PType, @enumFromInt(p_types[seg_idx])) != p_type) or
                 (p_flagss[seg_idx] != @as(std.elf.Elf64_Word, @bitCast(p_flags)))) continue;
@@ -263,16 +291,16 @@ pub const ElfModder: type = struct {
         self.pheaders.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
     }
 
-    fn calc_new_offset(self: *Self, top_idx: usize, size: u64) u64 {
+    fn calc_new_offset(self: *const Self, top_idx: usize, size: u64) u64 {
         const aligns = self.pheaders.items(Phdr64Fields.p_align);
         const offsets = self.pheaders.items(Phdr64Fields.p_offset);
         const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);
-        const index = self.pheaders_offset_order[self.top_segs[top_idx]];
+        const index = self.pheaders_offset_order[self.top_off_segs[top_idx]];
 
         // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
         // and for the case of a start edge whith enough space from the previous segment offset.
         const align_offset = (offsets[index] + (aligns[index] - (size % aligns[index]))) % aligns[index];
-        const temp = self.pheaders_offset_order[self.top_segs[top_idx - 1]];
+        const temp = self.pheaders_offset_order[self.top_off_segs[top_idx - 1]];
         const prev_off_end = offsets[temp] + fileszs[temp];
         std.debug.assert(prev_off_end <= offsets[index]);
         const new_offset = if (offsets[index] > (size + prev_off_end))
@@ -284,7 +312,7 @@ pub const ElfModder: type = struct {
                 (aligns[index] + align_offset)) - (prev_off_end % aligns[index]));
         return new_offset;
     }
-    // NOTE: Doing this the really dumb way for now.
+    // TODO: consider what happens when the original filesz and memsz are unequal.
     pub fn create_cave(self: *Self, size: u64, edge: SegEdge) !void {
         // NOTE: moving around the pheader table sounds like a bad idea.
         std.debug.assert(edge.top_idx != 0);
@@ -294,16 +322,16 @@ pub const ElfModder: type = struct {
         const paddrs = self.pheaders.items(Phdr64Fields.p_paddr);
         const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);
         const memszs = self.pheaders.items(Phdr64Fields.p_memsz);
-        const idx = self.pheaders_offset_order[self.top_segs[edge.top_idx]];
+        const idx = self.pheaders_offset_order[self.top_off_segs[edge.top_idx]];
 
         const new_offset: u64 = if (edge.is_end) offsets[idx] else self.calc_new_offset(edge.top_idx, size);
         var needed_size = if (edge.is_end) size else if (new_offset < offsets[idx]) size - (offsets[idx] - new_offset) else size + (new_offset - offsets[idx]);
 
         var top_idx = edge.top_idx + 1;
-        while (top_idx < self.top_segs.len) : (top_idx += 1) {
-            const offset_seg_index = self.top_segs[top_idx];
+        while (top_idx < self.top_off_segs.len) : (top_idx += 1) {
+            const offset_seg_index = self.top_off_segs[top_idx];
             const seg_index = self.pheaders_offset_order[offset_seg_index];
-            const prev_offset_seg_index = self.top_segs[top_idx - 1];
+            const prev_offset_seg_index = self.top_off_segs[top_idx - 1];
             const prev_seg_index = self.pheaders_offset_order[prev_offset_seg_index];
             const existing_gap = offsets[seg_index] - (offsets[prev_seg_index] + fileszs[prev_seg_index]);
             if (needed_size < existing_gap) break;
@@ -312,14 +340,14 @@ pub const ElfModder: type = struct {
             if ((aligns[seg_index] != 0) and ((needed_size % aligns[seg_index]) != 0)) needed_size += aligns[seg_index] - (needed_size % aligns[seg_index]);
             self.adjustments[top_idx - (edge.top_idx + 1)] = needed_size;
         }
-        var i = self.top_segs.len - (edge.top_idx + 1);
+        var i = self.top_off_segs.len - (edge.top_idx + 1);
         while (i > 0) {
             i -= 1;
             const top_index = i + edge.top_idx + 1;
-            const top_off_idx = self.top_segs[top_index];
+            const top_off_idx = self.top_off_segs[top_index];
             const top_seg_idx = self.pheaders_offset_order[top_off_idx];
             try shift_forward(self.parse_source, offsets[top_seg_idx], offsets[top_seg_idx] + fileszs[top_seg_idx], self.adjustments[i]);
-            const final_off_idx = if ((top_index + 1) == self.top_segs.len) self.pheaders_offset_order.len else self.top_segs[top_index + 1];
+            const final_off_idx = if ((top_index + 1) == self.top_off_segs.len) self.pheaders_offset_order.len else self.top_off_segs[top_index + 1];
             for (top_off_idx..final_off_idx) |seg_offset_index| {
                 const seg_index = self.pheaders_offset_order[seg_offset_index];
                 try self.set_phdr_field(seg_index, offsets[seg_index] + self.adjustments[i], "p_offset");
@@ -338,8 +366,44 @@ pub const ElfModder: type = struct {
         // TODO: adjust sections as well (and maybe debug info?)
     }
 
-    pub fn addr_to_off(self: *Self, addr: u64) u64 {
-        std.sort.upperBound(usize, addr, self.pheaders_vaddr_order, self.pheaders, addr_compareFn);
+    fn addr_lessThenFn(self: *const Self, lhs: u64, rhs: usize) bool {
+        return lhs < self.pheaders.items(Phdr64Fields.p_vaddr)[self.pheaders_vaddr_order[rhs]];
+    }
+
+    pub fn addr_to_off(self: *const Self, addr: u64) !u64 {
+        const offsets = self.pheaders.items(Phdr64Fields.p_offset);
+        const vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
+        const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);
+        const memszs = self.pheaders.items(Phdr64Fields.p_memsz);
+        const containnig_idx = self.addr_to_idx(addr);
+        if (!(addr < (vaddrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
+        const potenital_off = offsets[containnig_idx] + addr - vaddrs[containnig_idx];
+        if (!(potenital_off < (offsets[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
+        return potenital_off;
+    }
+
+    pub fn addr_to_idx(self: *const Self, addr: u64) usize {
+        return self.pheaders_offset_order[self.top_vaddr_segs[std.sort.upperBound(usize, addr, self.top_vaddr_segs, self.pheaders, addr_lessThenFn)]];
+    }
+
+    fn off_lessThenFn(self: *const Self, lhs: u64, rhs: usize) bool {
+        return lhs < self.pheaders.items(Phdr64Fields.p_offset)[self.pheaders_offset_order[rhs]];
+    }
+
+    pub fn off_to_addr(self: *const Self, off: u64) !u64 {
+        const offsets = self.pheaders.items(Phdr64Fields.p_offset);
+        const vaddrs = self.pheaders.items(Phdr64Fields.p_vaddr);
+        const fileszs = self.pheaders.items(Phdr64Fields.p_filesz);
+        const memszs = self.pheaders.items(Phdr64Fields.p_memsz);
+        const containnig_idx = self.off_to_idx(off);
+        if (!(off < (offsets[containnig_idx] + fileszs[containnig_idx]))) return Error.OffsetNotLoaded;
+        // NOTE: cant think of a case where the memsz will be smaller then the filesz (of a top level segment?).
+        std.debug.assert(memszs[containnig_idx] >= fileszs[containnig_idx]);
+        return vaddrs[containnig_idx] + off - offsets[containnig_idx];
+    }
+
+    pub fn off_to_idx(self: *const Self, off: u64) usize {
+        return self.pheaders_offset_order[self.top_off_segs[std.sort.upperBound(usize, off, self.top_off_segs, self.pheaders, off_lessThenFn)]];
     }
 };
 

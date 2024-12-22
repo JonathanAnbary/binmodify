@@ -44,6 +44,7 @@ pub const CtlFlowAssembler: type = struct {
         };
     }
 
+    // TODO: change this (no reason to return size since it should be constant)
     pub fn assemble_ctl_transfer(self: *const Self, from: u64, to: u64, buf: []u8) !u8 {
         const ctl_flow_insn = ARCH_TO_CTL_FLOW.get(self.arch).?;
         std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
@@ -100,7 +101,7 @@ pub const CtlFlowAssembler: type = struct {
         };
     }
 
-    const ARCH_TO_CTL_FLOW = std.EnumMap(arch.Arch, []const u8).init(std.enums.EnumFieldStruct(arch.Arch, ?[]const u8, null){
+    pub const ARCH_TO_CTL_FLOW = std.EnumMap(arch.Arch, []const u8).init(std.enums.EnumFieldStruct(arch.Arch, ?[]const u8, null){
         .ARM = &[_]u8{ 0x00, 0x00, 0x00, 0xea },
         .AArch64 = &[_]u8{ 0x00, 0x00, 0x00, 0x14 },
         .MIPS = &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },

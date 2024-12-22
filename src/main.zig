@@ -1,8 +1,9 @@
 const std = @import("std");
-const elf = @import("modelf.zig");
+const patch = @import("patch.zig");
+const arch = @import("arch.zig");
 
 fn arg_err(out: std.io.AnyWriter) !void {
-    try out.print("MKPatch <file-to-patch> <file-offset>", .{});
+    try out.print("MKPatch <file-to-patch> <patch-addr> <patch>", .{});
 }
 
 fn find_cave_err(out: std.io.AnyWriter) !void {
@@ -14,10 +15,11 @@ pub fn main() !void {
     var args = std.process.args();
     _ = args.next() orelse return arg_err(stdout.any());
     const to_patch = args.next() orelse return arg_err(stdout.any());
-    const wanted_size_str = args.next() orelse return arg_err(stdout.any());
-    const wanted_size = std.fmt.parseUnsigned(u32, wanted_size_str, 0) catch |err| {
-        return stdout.print("failed to parse {s} as u32 (err - {})\n", .{ wanted_size_str, err });
+    const patch_addr_str = args.next() orelse return arg_err(stdout.any());
+    const patch_addr = std.fmt.parseUnsigned(u64, patch_addr_str, 0) catch |err| {
+        return stdout.print("failed to parse {s} as u32 (err - {})\n", .{ patch_addr_str, err });
     };
+    const wanted_patch = args.next() orelse return arg_err(stdout.any());
     var f = try std.fs.cwd().openFile(to_patch, .{ .mode = .read_write });
     defer f.close();
     var stream = std.io.StreamSource{ .file = f };
@@ -25,10 +27,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() != std.heap.Check.ok) @panic("LEAKED");
     const alloc = gpa.allocator();
-    var elf_modder: elf.ElfModder = try elf.ElfModder.init(alloc, &stream);
-    defer elf_modder.deinit(alloc);
-    const option = try elf_modder.get_cave_option(wanted_size, elf.PType.PT_LOAD, elf.PFlags{ .PF_X = true, .PF_R = true }) orelse return find_cave_err(stdout.any());
-    try stdout.print("found cave option {}\n", .{option});
-    try elf_modder.create_cave(wanted_size, option);
-    try stdout.print("cave created succussfully.\n", .{});
+    var patcher: patch.Patcher = patch.Patcher.init(alloc, &stream, patch.FileType.Elf, arch.Arch.X86, arch.Mode.MODE_64, null);
+    defer patcher.deinit(alloc);
+    try patcher.pure_patch(patch_addr, wanted_patch);
 }
