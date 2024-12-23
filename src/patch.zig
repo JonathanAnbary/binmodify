@@ -106,14 +106,14 @@ pub const Patcher = struct {
     }
 
     pub fn pure_patch(self: *Self, addr: u64, patch: []const u8) !void {
-        const offsets = self.modder.pheaders.items(modelf.Phdr64Fields.p_offset);
-        const fileszs = self.modder.pheaders.items(modelf.Phdr64Fields.p_filesz);
-        const vaddrs = self.modder.pheaders.items(modelf.Phdr64Fields.p_vaddr);
-        const memszs = self.modder.pheaders.items(modelf.Phdr64Fields.p_filesz);
+        const offsets = self.modder.phdrs.items(modelf.Phdr64Fields.p_offset);
+        const fileszs = self.modder.phdrs.items(modelf.Phdr64Fields.p_filesz);
+        const vaddrs = self.modder.phdrs.items(modelf.Phdr64Fields.p_vaddr);
+        const memszs = self.modder.phdrs.items(modelf.Phdr64Fields.p_filesz);
         // TODO: think about this 20 (pull out of my ass as the maximum partial instruction size that might be needed).
         var buff: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW + 20]u8 = undefined;
-        const off = try self.modder.addr_to_off(addr);
-        try self.stream.seekTo(off);
+        const off_before_patch = try self.modder.addr_to_off(addr);
+        try self.stream.seekTo(off_before_patch);
         const max = try self.stream.read(&buff);
         const ctl_trasnfer_size = ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.farch).?.len;
         const idx = self.modder.addr_to_idx(addr);
@@ -122,27 +122,28 @@ pub const Patcher = struct {
         const patch_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
         std.debug.assert(insn_to_move_siz < buff.len);
         const cave_option = (try self.modder.get_cave_option(patch_size, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
-        const seg_idx = self.modder.pheaders_offset_order[self.modder.top_off_segs[cave_option.top_idx]];
+        const seg_idx = self.modder.phdrs_offset_order[self.modder.top_off_segs[cave_option.top_idx]];
         try self.modder.create_cave(patch_size, cave_option);
+        const off_after_patch = try self.modder.addr_to_off(addr);
         // TODO: mismatch between filesz and memsz is gonna screw me over.
         const temp = if (cave_option.is_end) fileszs[seg_idx] - patch.len else 0;
         const cave_off = offsets[seg_idx] + temp;
         const cave_addr = vaddrs[seg_idx] + temp;
         try self.stream.seekTo(cave_off);
-        std.debug.print("writing {X} at {X}\n", .{ patch, try self.stream.getPos() });
+        std.debug.print("writing patch {X} at {X}\n", .{ patch, try self.stream.getPos() });
         std.debug.assert(try self.stream.write(patch) == patch.len);
         try self.stream.seekTo(cave_off + patch.len);
-        std.debug.print("writing {X} at {X}\n", .{ buff[0..insn_to_move_siz], try self.stream.getPos() });
+        std.debug.print("writing moved insns {X} at {X}\n", .{ buff[0..insn_to_move_siz], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..insn_to_move_siz]) == insn_to_move_siz);
         const patch_to_cave_size = try self.ctl_assembler.assemble_ctl_transfer(addr, cave_addr, &buff);
         std.debug.assert(patch_to_cave_size == ctl_trasnfer_size);
-        try self.stream.seekTo(off);
-        std.debug.print("writing {X} at {X}\n", .{ buff[0..patch_to_cave_size], try self.stream.getPos() });
+        try self.stream.seekTo(off_after_patch);
+        std.debug.print("writing jmp from patch {X} at {X}\n", .{ buff[0..patch_to_cave_size], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..patch_to_cave_size]) == patch_to_cave_size);
         const cave_to_patch_size = try self.ctl_assembler.assemble_ctl_transfer(cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
         std.debug.assert(cave_to_patch_size == ctl_trasnfer_size);
-        try self.stream.seekTo(off + insn_to_move_siz);
-        std.debug.print("writing {X} at {X}\n", .{ buff[0..cave_to_patch_size], try self.stream.getPos() });
+        try self.stream.seekTo(cave_off + patch.len + insn_to_move_siz);
+        std.debug.print("writing jmp to patch {X} at {X}\n", .{ buff[0..cave_to_patch_size], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..cave_to_patch_size]) == cave_to_patch_size);
     }
 };
