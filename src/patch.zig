@@ -123,22 +123,26 @@ pub const Patcher = struct {
         std.debug.assert(insn_to_move_siz < buff.len);
         const cave_option = (try self.modder.get_cave_option(patch_size, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
         const seg_idx = self.modder.pheaders_offset_order[self.modder.top_off_segs[cave_option.top_idx]];
-        try self.modder.create_cave(patch.len, cave_option);
+        try self.modder.create_cave(patch_size, cave_option);
         // TODO: mismatch between filesz and memsz is gonna screw me over.
         const temp = if (cave_option.is_end) fileszs[seg_idx] - patch.len else 0;
         const cave_off = offsets[seg_idx] + temp;
         const cave_addr = vaddrs[seg_idx] + temp;
         try self.stream.seekTo(cave_off);
+        std.debug.print("writing {X} at {X}\n", .{ patch, try self.stream.getPos() });
         std.debug.assert(try self.stream.write(patch) == patch.len);
         try self.stream.seekTo(cave_off + patch.len);
+        std.debug.print("writing {X} at {X}\n", .{ buff[0..insn_to_move_siz], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..insn_to_move_siz]) == insn_to_move_siz);
         const patch_to_cave_size = try self.ctl_assembler.assemble_ctl_transfer(addr, cave_addr, &buff);
         std.debug.assert(patch_to_cave_size == ctl_trasnfer_size);
         try self.stream.seekTo(off);
+        std.debug.print("writing {X} at {X}\n", .{ buff[0..patch_to_cave_size], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..patch_to_cave_size]) == patch_to_cave_size);
         const cave_to_patch_size = try self.ctl_assembler.assemble_ctl_transfer(cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
         std.debug.assert(cave_to_patch_size == ctl_trasnfer_size);
         try self.stream.seekTo(off + insn_to_move_siz);
+        std.debug.print("writing {X} at {X}\n", .{ buff[0..cave_to_patch_size], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..cave_to_patch_size]) == cave_to_patch_size);
     }
 };

@@ -349,7 +349,7 @@ pub const ElfModder: type = struct {
             if ((aligns[seg_index] != 0) and ((needed_size % aligns[seg_index]) != 0)) needed_size += aligns[seg_index] - (needed_size % aligns[seg_index]);
             self.adjustments[top_idx - (edge.top_idx + 1)] = needed_size;
         }
-        var i = self.top_off_segs.len - (edge.top_idx + 1);
+        var i = top_idx - (edge.top_idx + 1);
         while (i > 0) {
             i -= 1;
             const top_index = i + edge.top_idx + 1;
