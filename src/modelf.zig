@@ -286,7 +286,7 @@ pub const ElfModder: type = struct {
             const off_idx = self.top_off_segs[i];
             const seg_idx = self.phdrs_offset_order[off_idx];
             if ((@as(PType, @enumFromInt(p_types[seg_idx])) != p_type) or
-                (p_flagss[seg_idx] != @as(std.elf.Elf64_Word, @bitCast(p_flags)))) continue;
+                (p_flagss[seg_idx] != @as(std.elf.Word, @bitCast(p_flags)))) continue;
             // NOTE: this assumes you dont have an upper bound on possible memory address.
             if ((seg_idx == (p_vaddrs.len - 1)) or
                 ((p_vaddrs[seg_idx] + p_memszs[seg_idx] + wanted_size) < p_vaddrs[seg_idx + 1])) return SegEdge{
@@ -488,8 +488,13 @@ pub const ElfModder: type = struct {
         // TODO: adjust sections as well (and maybe debug info?)
     }
 
-    fn addr_lessThenFn(self: *const Self, lhs: u64, rhs: usize) bool {
-        return lhs < self.phdrs.items(Phdr64Fields.p_vaddr)[self.phdrs_vaddr_order[rhs]];
+    const CompareContext = struct {
+        self: *const Self,
+        lhs: u64,
+    };
+
+    fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
+        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_vaddr)[context.self.phdrs_vaddr_order[rhs]]);
     }
 
     pub fn addr_to_off(self: *const Self, addr: u64) Error!u64 {
@@ -498,7 +503,6 @@ pub const ElfModder: type = struct {
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
         const memszs = self.phdrs.items(Phdr64Fields.p_memsz);
         const containnig_idx = self.addr_to_idx(addr);
-        std.debug.print("the address is contained in inder {}\n", .{containnig_idx});
         if (!(addr < (vaddrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
         const potenital_off = offsets[containnig_idx] + addr - vaddrs[containnig_idx];
         if (!(potenital_off < (offsets[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
@@ -506,12 +510,11 @@ pub const ElfModder: type = struct {
     }
 
     pub fn addr_to_idx(self: *const Self, addr: u64) usize {
-        std.debug.print("searching for {} in {any}\n", .{ addr, self.top_vaddr_segs });
-        return self.phdrs_offset_order[self.top_vaddr_segs[std.sort.lowerBound(usize, addr, self.top_vaddr_segs, self, addr_lessThenFn)]];
+        return self.phdrs_offset_order[self.top_vaddr_segs[std.sort.lowerBound(usize, self.top_vaddr_segs, CompareContext{ .self = self, .lhs = addr }, addr_compareFn)]];
     }
 
-    fn off_lessThenFn(self: *const Self, lhs: u64, rhs: usize) bool {
-        return lhs < self.phdrs.items(Phdr64Fields.p_offset)[self.phdrs_offset_order[rhs]];
+    fn off_compareFn(context: CompareContext, rhs: usize) bool {
+        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_offset)[context.self.phdrs_offset_order[rhs]]);
     }
 
     pub fn off_to_addr(self: *const Self, off: u64) Error!u64 {
@@ -527,7 +530,7 @@ pub const ElfModder: type = struct {
     }
 
     pub fn off_to_idx(self: *const Self, off: u64) usize {
-        return self.phdrs_offset_order[self.top_off_segs[std.sort.upperBound(usize, off, self.top_off_segs, self.phdrs, off_lessThenFn)]];
+        return self.phdrs_offset_order[self.top_off_segs[std.sort.upperBound(usize, self.top_off_segs, CompareContext{ .self = self, .lsh = off }, off_compareFn)]];
     }
 };
 
