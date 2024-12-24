@@ -246,6 +246,10 @@ pub const ElfModder: type = struct {
         }
         std.sort.pdq(usize, shdrs_offset_order, &shdrs, sec_offset_lessThanFn);
 
+        std.debug.print("phdrs = {any}\n", .{phdrs});
+        std.debug.print("phdrs_vaddr_order = {any}\n", .{phdrs_vaddr_order});
+        std.debug.print("top_vaddr_segs = {any}\n", .{top_vaddr_segs});
+
         return Self{
             .header = header,
             .phdrs = phdrs,
@@ -494,7 +498,7 @@ pub const ElfModder: type = struct {
     };
 
     fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_vaddr)[context.self.phdrs_vaddr_order[rhs]]);
+        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_vaddr)[context.self.phdrs_vaddr_order[context.self.top_vaddr_segs[rhs]]]);
     }
 
     pub fn addr_to_off(self: *const Self, addr: u64) Error!u64 {
@@ -503,6 +507,7 @@ pub const ElfModder: type = struct {
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
         const memszs = self.phdrs.items(Phdr64Fields.p_memsz);
         const containnig_idx = self.addr_to_idx(addr);
+        std.debug.print("containnig idx = {}\n", .{containnig_idx});
         if (!(addr < (vaddrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
         const potenital_off = offsets[containnig_idx] + addr - vaddrs[containnig_idx];
         if (!(potenital_off < (offsets[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
@@ -510,11 +515,11 @@ pub const ElfModder: type = struct {
     }
 
     pub fn addr_to_idx(self: *const Self, addr: u64) usize {
-        return self.phdrs_offset_order[self.top_vaddr_segs[std.sort.lowerBound(usize, self.top_vaddr_segs, CompareContext{ .self = self, .lhs = addr }, addr_compareFn)]];
+        return self.phdrs_vaddr_order[self.top_vaddr_segs[std.sort.lowerBound(usize, self.top_vaddr_segs, CompareContext{ .self = self, .lhs = addr }, addr_compareFn)]];
     }
 
     fn off_compareFn(context: CompareContext, rhs: usize) bool {
-        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_offset)[context.self.phdrs_offset_order[rhs]]);
+        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_offset)[context.self.phdrs_offset_order[context.self.top_off_segs[rhs]]]);
     }
 
     pub fn off_to_addr(self: *const Self, off: u64) Error!u64 {
