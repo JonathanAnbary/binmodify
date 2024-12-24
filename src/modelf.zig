@@ -540,32 +540,33 @@ pub const ElfModder: type = struct {
 };
 
 test "create_cave same output" {
+    // NOTE: technically I could build the binary from source but I am unsure of a way to ensure that it will result in the exact same binary each time. (which would make the test flaky, since it might be that there is no viable code cave.).
+
+    // check regular output.
     const no_cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "zig", "run", "./tests/hello_world.zig" },
+        .argv = &[_][]const u8{"./tests/hello_world"},
     });
     defer std.testing.allocator.free(no_cave_result.stdout);
     defer std.testing.allocator.free(no_cave_result.stderr);
-    const res = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "zig", "build-exe", "./tests/hello_world.zig" },
-    });
-    defer std.testing.allocator.free(res.stdout);
-    defer std.testing.allocator.free(res.stderr);
+
+    // create cave.
+    // NOTE: need to put this in a block since the file must be closed before the next process can execute.
     {
-        var f = try std.fs.cwd().openFile("./hello_world", .{ .mode = .read_write });
+        var f = try std.fs.cwd().openFile("./tests/hello_world", .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
-
         const wanted_size = 0x1000;
         var elf_modder: ElfModder = try ElfModder.init(std.testing.allocator, &stream);
         defer elf_modder.deinit(std.testing.allocator);
         const option = (try elf_modder.get_cave_option(wanted_size, PType.PT_LOAD, PFlags{ .PF_X = true, .PF_R = true })).?;
         try elf_modder.create_cave(wanted_size, option);
     }
+
+    // check output with a cave
     const cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{"./hello_world"},
+        .argv = &[_][]const u8{"./tests/hello_world"},
     });
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);
