@@ -441,8 +441,8 @@ pub const ElfModder: type = struct {
         for (edge.top_idx + 1..top_idx) |top_index| {
             const top_off_idx = self.top_off_segs[top_index];
             const top_seg_idx = self.phdrs_offset_order[top_off_idx];
-            while (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] - self.adjustments[top_index - (edge.top_idx + 1)])) : (sec_off_idx += 1) {}
-            while (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < ((offsets[top_seg_idx] - self.adjustments[top_index - (edge.top_idx + 1)]) + fileszs[top_seg_idx])) : (sec_off_idx += 1) {
+            while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] - self.adjustments[top_index - (edge.top_idx + 1)]))) : (sec_off_idx += 1) {}
+            while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < ((offsets[top_seg_idx] - self.adjustments[top_index - (edge.top_idx + 1)]) + fileszs[top_seg_idx]))) : (sec_off_idx += 1) {
                 const sec_idx = self.shdrs_offset_order[sec_off_idx];
                 try self.set_shdr_field(sec_idx, shdr_offsets[sec_idx] + self.adjustments[top_index - (edge.top_idx + 1)], "sh_offset");
             }
@@ -452,8 +452,8 @@ pub const ElfModder: type = struct {
             const top_off_idx = self.top_off_segs[edge.top_idx];
             const top_seg_idx = self.phdrs_offset_order[top_off_idx];
             sec_off_idx = 0;
-            while (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < offsets[top_seg_idx]) : (sec_off_idx += 1) {}
-            while (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] + fileszs[top_seg_idx])) : (sec_off_idx += 1) {
+            while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < offsets[top_seg_idx])) : (sec_off_idx += 1) {}
+            while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] + fileszs[top_seg_idx]))) : (sec_off_idx += 1) {
                 const sec_idx = self.shdrs_offset_order[sec_off_idx];
                 if (shdr_offsets[sec_idx] == offsets[top_seg_idx]) {
                     try self.set_shdr_field(sec_idx, shdr_sizes[sec_idx] + size, "sh_size");
@@ -474,8 +474,8 @@ pub const ElfModder: type = struct {
             const top_off_idx = self.top_off_segs[edge.top_idx];
             const top_seg_idx = self.phdrs_offset_order[top_off_idx];
             sec_off_idx = 0;
-            while (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < offsets[top_seg_idx]) : (sec_off_idx += 1) {}
-            while (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] + fileszs[top_seg_idx])) : (sec_off_idx += 1) {
+            while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < offsets[top_seg_idx])) : (sec_off_idx += 1) {}
+            while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] + fileszs[top_seg_idx]))) : (sec_off_idx += 1) {
                 const sec_idx = self.shdrs_offset_order[sec_off_idx];
                 if ((shdr_offsets[sec_idx] + shdr_sizes[sec_idx]) == (offsets[top_seg_idx] + fileszs[top_seg_idx])) {
                     try self.set_shdr_field(sec_idx, shdr_sizes[sec_idx] + size, "sh_size");
@@ -498,6 +498,7 @@ pub const ElfModder: type = struct {
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
         const memszs = self.phdrs.items(Phdr64Fields.p_memsz);
         const containnig_idx = self.addr_to_idx(addr);
+        std.debug.print("the address is contained in inder {}\n", .{containnig_idx});
         if (!(addr < (vaddrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
         const potenital_off = offsets[containnig_idx] + addr - vaddrs[containnig_idx];
         if (!(potenital_off < (offsets[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
@@ -505,7 +506,8 @@ pub const ElfModder: type = struct {
     }
 
     pub fn addr_to_idx(self: *const Self, addr: u64) usize {
-        return self.phdrs_offset_order[self.top_vaddr_segs[std.sort.upperBound(usize, addr, self.top_vaddr_segs, self, addr_lessThenFn)]];
+        std.debug.print("searching for {} in {any}\n", .{ addr, self.top_vaddr_segs });
+        return self.phdrs_offset_order[self.top_vaddr_segs[std.sort.lowerBound(usize, addr, self.top_vaddr_segs, self, addr_lessThenFn)]];
     }
 
     fn off_lessThenFn(self: *const Self, lhs: u64, rhs: usize) bool {

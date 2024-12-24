@@ -114,19 +114,23 @@ pub const Patcher = struct {
         var buff: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW + 20]u8 = undefined;
         const off_before_patch = try self.modder.addr_to_off(addr);
         try self.stream.seekTo(off_before_patch);
+        std.debug.print("reading instructions to move at {X}\n", .{try self.stream.getPos()});
         const max = try self.stream.read(&buff);
+        std.debug.print("instruction to move include {X}\n", .{buff[0..max]});
         const ctl_trasnfer_size = ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.farch).?.len;
         const idx = self.modder.addr_to_idx(addr);
         std.debug.assert((addr + ctl_trasnfer_size) <= (vaddrs[idx] + memszs[idx]));
         const insn_to_move_siz = min_insn_size(self.csh, ctl_trasnfer_size, buff[0..max]);
-        const patch_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
+        const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
         std.debug.assert(insn_to_move_siz < buff.len);
-        const cave_option = (try self.modder.get_cave_option(patch_size, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
+        std.debug.print("the patch.len = {x}, insn_to_move_siz = {x}, ctl_transfer_size = {x}, sum = {x}\n", .{ patch.len, insn_to_move_siz, ctl_trasnfer_size, cave_size });
+        const cave_option = (try self.modder.get_cave_option(cave_size, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
         const seg_idx = self.modder.phdrs_offset_order[self.modder.top_off_segs[cave_option.top_idx]];
-        try self.modder.create_cave(patch_size, cave_option);
+        std.debug.print("found cave option {} at index {} offset {x}\n", .{ cave_option, seg_idx, offsets[seg_idx] });
+        try self.modder.create_cave(cave_size, cave_option);
         const off_after_patch = try self.modder.addr_to_off(addr);
         // TODO: mismatch between filesz and memsz is gonna screw me over.
-        const temp = if (cave_option.is_end) fileszs[seg_idx] - patch.len else 0;
+        const temp = if (cave_option.is_end) fileszs[seg_idx] - cave_size else 0;
         const cave_off = offsets[seg_idx] + temp;
         const cave_addr = vaddrs[seg_idx] + temp;
         try self.stream.seekTo(cave_off);
