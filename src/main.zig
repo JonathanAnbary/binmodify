@@ -22,7 +22,7 @@ pub fn main() !void {
     const wanted_patch_hex = args.next() orelse return arg_err(stdout.any());
     if (wanted_patch_hex.len == 0) return stdout.print("<patch> must be hex bytes", .{});
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit() != std.heap.Check.ok) std.debug.panic("Program leaked");
+    defer if (gpa.deinit() != std.heap.Check.ok) std.debug.panic("Program leaked", .{});
     const alloc = gpa.allocator();
     const patch_buf = try alloc.alloc(u8, @divFloor(wanted_patch_hex.len, 2));
     defer alloc.free(patch_buf);

@@ -487,7 +487,7 @@ pub const ElfModder: type = struct {
     };
 
     fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_vaddr)[context.self.phdrs_vaddr_order[context.self.top_vaddr_segs[rhs]]]);
+        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_vaddr)[context.self.phdrs_vaddr_order[rhs]]);
     }
 
     pub fn addr_to_off(self: *const Self, addr: u64) Error!u64 {
@@ -503,11 +503,11 @@ pub const ElfModder: type = struct {
     }
 
     pub fn addr_to_idx(self: *const Self, addr: u64) usize {
-        return self.phdrs_vaddr_order[self.top_vaddr_segs[std.sort.lowerBound(usize, self.top_vaddr_segs, CompareContext{ .self = self, .lhs = addr }, addr_compareFn)]];
+        return self.phdrs_vaddr_order[self.top_vaddr_segs[std.sort.lowerBound(usize, self.top_vaddr_segs, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1]];
     }
 
-    fn off_compareFn(context: CompareContext, rhs: usize) bool {
-        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_offset)[context.self.phdrs_offset_order[context.self.top_off_segs[rhs]]]);
+    fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
+        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_offset)[context.self.phdrs_offset_order[rhs]]);
     }
 
     pub fn off_to_addr(self: *const Self, off: u64) Error!u64 {
@@ -523,7 +523,7 @@ pub const ElfModder: type = struct {
     }
 
     pub fn off_to_idx(self: *const Self, off: u64) usize {
-        return self.phdrs_offset_order[self.top_off_segs[std.sort.upperBound(usize, self.top_off_segs, CompareContext{ .self = self, .lsh = off }, off_compareFn)]];
+        return self.phdrs_offset_order[self.top_off_segs[std.sort.lowerBound(usize, self.top_off_segs, CompareContext{ .self = self, .lsh = off + 1 }, off_compareFn) - 1]];
     }
 };
 
