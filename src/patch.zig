@@ -151,3 +151,38 @@ pub const Patcher = struct {
         std.debug.assert(try self.stream.write(buff[0..cave_to_patch_size]) == cave_to_patch_size);
     }
 };
+
+test "elf nop patch no difference" {
+    // NOTE: technically I could build the binary from source but I am unsure of a way to ensure that it will result in the exact same binary each time. (which would make the test flaky, since it might be that there is no viable code cave.).
+
+    // check regular output.
+    const no_patch_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{"./tests/hello_world"},
+    });
+    defer std.testing.allocator.free(no_patch_result.stdout);
+    defer std.testing.allocator.free(no_patch_result.stderr);
+
+    // create cave.
+    // NOTE: need to put this in a block since the file must be closed before the next process can execute.
+    {
+        var f = try std.fs.cwd().openFile("./tests/hello_world", .{ .mode = .read_write });
+        defer f.close();
+        var stream = std.io.StreamSource{ .file = f };
+        const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
+        var patcher: Patcher = try Patcher.init(std.testing.allocator, &stream, FileType.Elf, arch.Arch.X86, arch.Mode.MODE_64, null);
+        defer patcher.deinit(std.testing.allocator) catch |err| std.debug.panic("Patcher deinit failed {}", .{err});
+        try patcher.pure_patch(0x1001B3C, &patch);
+    }
+
+    // check output with a cave
+    const patch_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{"./tests/hello_world"},
+    });
+    defer std.testing.allocator.free(patch_result.stdout);
+    defer std.testing.allocator.free(patch_result.stderr);
+    try std.testing.expect(patch_result.term.Exited == no_patch_result.term.Exited);
+    try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
+    try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
+}
