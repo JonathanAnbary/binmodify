@@ -6,6 +6,7 @@ pub const Error: type = error{
     ArchModeMismatch,
     NoFreeSpace,
     ArchNotSupported,
+    ArchEndianMismatch,
 };
 
 pub const Arch: type = enum(u4) {
@@ -53,10 +54,7 @@ pub const Mode: type = enum(u8) {
     EVM,
 };
 
-pub const Endian: type = enum(u1) {
-    Little,
-    Big,
-};
+pub const Endian: type = std.builtin.Endian;
 
 pub const IS_ENDIANABLE = std.EnumSet(Arch).init(std.enums.EnumFieldStruct(Arch, bool, false){
     .ARM = true,
@@ -89,7 +87,7 @@ pub fn to_cs_mode(curr_arch: Arch, mode: Mode, endian: ?Endian) !capstone.cs_mod
     const cs_endian = blk: {
         if (endian == null) break :blk 0;
         if (IS_ENDIANABLE.contains(curr_arch)) return Error.ArchNotEndianable;
-        if (endian == Endian.Big) break :blk capstone.CS_MODE_BIG_ENDIAN;
+        if (endian == Endian.big) break :blk capstone.CS_MODE_BIG_ENDIAN;
         break :blk capstone.CS_MODE_LITTLE_ENDIAN;
     };
     return switch (curr_arch) {

@@ -246,10 +246,6 @@ pub const ElfModder: type = struct {
         }
         std.sort.pdq(usize, shdrs_offset_order, &shdrs, sec_offset_lessThanFn);
 
-        std.debug.print("phdrs = {any}\n", .{phdrs});
-        std.debug.print("phdrs_vaddr_order = {any}\n", .{phdrs_vaddr_order});
-        std.debug.print("top_vaddr_segs = {any}\n", .{top_vaddr_segs});
-
         return Self{
             .header = header,
             .phdrs = phdrs,
@@ -308,7 +304,6 @@ pub const ElfModder: type = struct {
 
     // TODO: the shoff is not getting updated when I move stuff around, should probably update it.
     fn set_shdr_field(self: *Self, index: usize, val: u64, comptime field_name: []const u8) Error!void {
-        std.debug.print("self.header.shoff = {X}\n", .{self.header.shoff});
         try self.parse_source.seekTo(self.header.shoff + self.header.shentsize * index);
         if (self.header.is_64) {
             const T = std.meta.fieldInfo(std.elf.Elf64_Shdr, @field(Shdr64Fields, field_name)).type;
@@ -321,7 +316,6 @@ pub const ElfModder: type = struct {
             try self.parse_source.seekTo(self.header.shoff + self.header.shentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Shdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("writing shdr {X} at {X}\n", .{ temp2, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(std.elf.Elf32_Shdr, @field(Shdr32Fields, field_name)).type;
@@ -334,7 +328,6 @@ pub const ElfModder: type = struct {
             try self.parse_source.seekTo(self.header.shoff + self.header.shentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Shdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("writing shdr {X} at {X}\n", .{ temp2, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         }
         self.shdrs.items(@field(Shdr64Fields, field_name))[index] = @intCast(val);
@@ -355,7 +348,6 @@ pub const ElfModder: type = struct {
             try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("writing phdr {X} at {X}\n", .{ temp2, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(std.elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
@@ -368,7 +360,6 @@ pub const ElfModder: type = struct {
             try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Phdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("writing phdr {X} at {X}\n", .{ temp2, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         }
         self.phdrs.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
@@ -430,7 +421,6 @@ pub const ElfModder: type = struct {
             const top_index = i + edge.top_idx + 1;
             const top_off_idx = self.top_off_segs[top_index];
             const top_seg_idx = self.phdrs_offset_order[top_off_idx];
-            std.debug.print("shfting forward from {X} to {X} by {X}\n", .{ offsets[top_seg_idx], offsets[top_seg_idx] + fileszs[top_seg_idx], self.adjustments[i] });
             try shift_forward(self.parse_source, offsets[top_seg_idx], offsets[top_seg_idx] + fileszs[top_seg_idx], self.adjustments[i]);
             const final_off_idx = if ((top_index + 1) == self.top_off_segs.len) self.phdrs_offset_order.len else self.top_off_segs[top_index + 1];
             for (top_off_idx..final_off_idx) |seg_offset_index| {
@@ -468,7 +458,6 @@ pub const ElfModder: type = struct {
                 }
             }
 
-            std.debug.print("shfting forward from {X} to {X} by {X}\n", .{ offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx] });
             try shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
             try self.set_phdr_field(idx, vaddrs[idx] - size, "p_vaddr");
             // NOTE: not really sure about the following line.
@@ -507,7 +496,6 @@ pub const ElfModder: type = struct {
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
         const memszs = self.phdrs.items(Phdr64Fields.p_memsz);
         const containnig_idx = self.addr_to_idx(addr);
-        std.debug.print("containnig idx = {}\n", .{containnig_idx});
         if (!(addr < (vaddrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
         const potenital_off = offsets[containnig_idx] + addr - vaddrs[containnig_idx];
         if (!(potenital_off < (offsets[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;

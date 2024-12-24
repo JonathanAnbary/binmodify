@@ -2,7 +2,7 @@ const std = @import("std");
 const arch = @import("arch.zig");
 
 // TODO: check if all architectures use twos complement.
-fn twos_complement(value: i128, bits: u16, endian: arch.Endian, buffer: []u8) void {
+pub fn twos_complement(value: i128, bits: u16, endian: arch.Endian, buffer: []u8) void {
     const bytes = (bits + 7) / 8;
     var temp = blk: {
         if (value < 0) {
@@ -14,15 +14,15 @@ fn twos_complement(value: i128, bits: u16, endian: arch.Endian, buffer: []u8) vo
             break :blk @abs(value);
         }
     };
-    const save_buf: u8 = if (endian == .Big) buffer[0] else buffer[bytes - 1];
+    const save_buf: u8 = if (endian == .big) buffer[0] else buffer[bytes - 1];
     for (0..bytes) |i| {
-        buffer[if (endian == .Big) bytes - i - 1 else i] = @intCast(temp & 0xff);
+        buffer[if (endian == .big) bytes - i - 1 else i] = @intCast(temp & 0xff);
         temp >>= 8;
     }
     const one: u8 = 1;
     if (bits % 8 != 0) {
         for (bits % 8..8) |i| {
-            buffer[if (endian == .Big) 0 else bytes - 1] |= save_buf & one << @intCast(i);
+            buffer[if (endian == .big) 0 else bytes - 1] |= save_buf & one << @intCast(i);
         }
     }
 }
@@ -52,7 +52,7 @@ pub const CtlFlowAssembler: type = struct {
         twos_complement(
             self.calc_ctl_tranfer_op(to, from),
             target_op_desc.size,
-            self.endian orelse .Little,
+            self.endian orelse .little,
             buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8],
         );
         return @intCast(ctl_flow_insn.len);

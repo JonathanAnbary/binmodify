@@ -114,19 +114,15 @@ pub const Patcher = struct {
         var buff: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW + 20]u8 = undefined;
         const off_before_patch = try self.modder.addr_to_off(addr);
         try self.stream.seekTo(off_before_patch);
-        std.debug.print("reading instructions to move at {X}\n", .{try self.stream.getPos()});
         const max = try self.stream.read(&buff);
-        std.debug.print("instruction to move include {X}\n", .{buff[0..max]});
         const ctl_trasnfer_size = ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.farch).?.len;
         const idx = self.modder.addr_to_idx(addr);
         std.debug.assert((addr + ctl_trasnfer_size) <= (vaddrs[idx] + memszs[idx]));
         const insn_to_move_siz = min_insn_size(self.csh, ctl_trasnfer_size, buff[0..max]);
         const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
         std.debug.assert(insn_to_move_siz < buff.len);
-        std.debug.print("the patch.len = {x}, insn_to_move_siz = {x}, ctl_transfer_size = {x}, sum = {x}\n", .{ patch.len, insn_to_move_siz, ctl_trasnfer_size, cave_size });
         const cave_option = (try self.modder.get_cave_option(cave_size, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
         const seg_idx = self.modder.phdrs_offset_order[self.modder.top_off_segs[cave_option.top_idx]];
-        std.debug.print("found cave option {} at index {} offset {x}\n", .{ cave_option, seg_idx, offsets[seg_idx] });
         try self.modder.create_cave(cave_size, cave_option);
         const off_after_patch = try self.modder.addr_to_off(addr);
         // TODO: mismatch between filesz and memsz is gonna screw me over.
@@ -134,20 +130,16 @@ pub const Patcher = struct {
         const cave_off = offsets[seg_idx] + temp;
         const cave_addr = vaddrs[seg_idx] + temp;
         try self.stream.seekTo(cave_off);
-        std.debug.print("writing patch {X} at {X}\n", .{ patch, try self.stream.getPos() });
         std.debug.assert(try self.stream.write(patch) == patch.len);
         try self.stream.seekTo(cave_off + patch.len);
-        std.debug.print("writing moved insns {X} at {X}\n", .{ buff[0..insn_to_move_siz], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..insn_to_move_siz]) == insn_to_move_siz);
         const patch_to_cave_size = try self.ctl_assembler.assemble_ctl_transfer(addr, cave_addr, &buff);
         std.debug.assert(patch_to_cave_size == ctl_trasnfer_size);
         try self.stream.seekTo(off_after_patch);
-        std.debug.print("writing jmp from patch {X} at {X}\n", .{ buff[0..patch_to_cave_size], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..patch_to_cave_size]) == patch_to_cave_size);
         const cave_to_patch_size = try self.ctl_assembler.assemble_ctl_transfer(cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
         std.debug.assert(cave_to_patch_size == ctl_trasnfer_size);
         try self.stream.seekTo(cave_off + patch.len + insn_to_move_siz);
-        std.debug.print("writing jmp to patch {X} at {X}\n", .{ buff[0..cave_to_patch_size], try self.stream.getPos() });
         std.debug.assert(try self.stream.write(buff[0..cave_to_patch_size]) == cave_to_patch_size);
     }
 };
