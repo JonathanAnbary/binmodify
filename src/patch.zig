@@ -122,7 +122,7 @@ pub const Patcher = struct {
         const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
         std.debug.assert(insn_to_move_siz < buff.len);
         const cave_option = (try self.modder.get_cave_option(cave_size, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
-        const seg_idx = self.modder.phdrs_offset_order[self.modder.top_off_segs[cave_option.top_idx]];
+        const seg_idx = self.modder.phdrs_off_order[self.modder.top_off_segs[cave_option.top_idx]];
         try self.modder.create_cave(cave_size, cave_option);
         const off_after_patch = try self.modder.addr_to_off(addr);
         // TODO: mismatch between filesz and memsz is gonna screw me over.

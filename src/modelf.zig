@@ -1,5 +1,6 @@
 const std = @import("std");
 const native_endian = @import("builtin").target.cpu.arch.endian();
+const utils = @import("utils.zig");
 
 pub const PType: type = enum(u32) {
     PT_NULL = std.elf.PT_NULL,
@@ -57,65 +58,6 @@ pub const Error = error{
     NoMatchingOffset,
 } || ElfError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError;
 
-fn shift_forward(stream: *std.io.StreamSource, start: u64, end: u64, amt: u64) Error!void {
-    if ((start == end) or (amt == 0)) return;
-    std.debug.assert(start < end);
-    var buff: [1024]u8 = undefined;
-    const shift_start: u64 = blk: {
-        if (end < (start + amt)) {
-            const temp = try stream.getEndPos();
-            if ((start + amt) > temp) {
-                try stream.seekTo(temp);
-                try stream.writer().writeByteNTimes(0, start + amt - temp);
-            }
-            break :blk start;
-        } else break :blk end - amt;
-    };
-    var pos = shift_start;
-    while ((pos + buff.len) < end) : (pos += buff.len) {
-        try stream.seekTo(pos);
-        std.debug.assert(try stream.read(&buff) == buff.len);
-        try stream.seekTo(pos + amt);
-        std.debug.assert(try stream.write(&buff) == buff.len);
-    }
-    try stream.seekTo(pos);
-    std.debug.assert(try stream.read(buff[0 .. end - pos]) == end - pos);
-    try stream.seekTo(pos + amt);
-    std.debug.assert(try stream.write(buff[0 .. end - pos]) == end - pos);
-    pos = shift_start;
-    while (pos > (start + buff.len)) : (pos -= buff.len) {
-        try stream.seekTo(pos - buff.len);
-        std.debug.assert(try stream.read(&buff) == buff.len);
-        try stream.seekTo(pos - buff.len + amt);
-        std.debug.assert(try stream.write(&buff) == buff.len);
-    }
-    try stream.seekTo(start);
-    std.debug.assert(try stream.read(buff[0 .. pos - start]) == pos - start);
-    try stream.seekTo(start + amt);
-    std.debug.assert(try stream.write(buff[0 .. pos - start]) == pos - start);
-}
-
-test "test shift stream" {
-    const start = 0;
-    const end = 10;
-    const shift = 3;
-    var buf = "abcdefghijklmnopqrstuvwxyz".*;
-    var expected = "abcabcdefghijnopqrstuvwxyz".*;
-    @memcpy(expected[start + shift .. end + shift], buf[start..end]);
-    var stream = std.io.StreamSource{ .buffer = std.io.fixedBufferStream(&buf) };
-    try shift_forward(&stream, start, end, shift);
-    try std.testing.expectEqualStrings(&expected, &buf);
-    const start2 = 0;
-    const end2 = 4432;
-    const shift2 = 1543;
-    var buf2 = [1]u8{'A'} ** 1024 ++ "\n".* ++ [1]u8{'B'} ** 1024 ++ "\n".* ++ [1]u8{'C'} ** 1024 ++ "\n".* ++ [1]u8{'D'} ** 1024 ++ "\n".* ++ [1]u8{'E'} ** 1024 ++ "\n".* ++ [1]u8{'F'} ** 1024 ++ "\n".*;
-    var expected2 = [1]u8{'A'} ** 1024 ++ "\n".* ++ [1]u8{'B'} ** 1024 ++ "\n".* ++ [1]u8{'C'} ** 1024 ++ "\n".* ++ [1]u8{'D'} ** 1024 ++ "\n".* ++ [1]u8{'E'} ** 1024 ++ "\n".* ++ [1]u8{'F'} ** 1024 ++ "\n".*;
-    @memcpy(expected2[start2 + shift2 .. end2 + shift2], buf2[start2..end2]);
-    var stream2 = std.io.StreamSource{ .buffer = std.io.fixedBufferStream(&buf2) };
-    try shift_forward(&stream2, start2, end2, shift2);
-    try std.testing.expectEqualStrings(&expected2, &buf2);
-}
-
 pub const SegEdge: type = struct {
     top_idx: usize,
     is_end: bool,
@@ -148,8 +90,10 @@ fn vaddr_lessThanFn(phdrs: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, 
 pub const ElfModder: type = struct {
     header: std.elf.Header,
     phdrs: std.MultiArrayList(std.elf.Elf64_Phdr),
-    phdrs_offset_order: []usize,
+    phdrs_off_order: []usize,
     phdrs_vaddr_order: []usize,
+    phdr_to_off: []usize,
+    phdr_to_vaddr: []usize,
     // TODO: dont really need this, can just calculate it as I go by.
     top_off_segs: []usize,
     top_vaddr_segs: []usize,
@@ -173,19 +117,25 @@ pub const ElfModder: type = struct {
         const fileszs = phdrs.items(Phdr64Fields.p_filesz);
         const vaddrs = phdrs.items(Phdr64Fields.p_vaddr);
         const memszs = phdrs.items(Phdr64Fields.p_memsz);
-        var phdrs_offset_order = try gpa.alloc(usize, count);
+        var phdrs_off_order = try gpa.alloc(usize, count);
         var phdrs_vaddr_order = try gpa.alloc(usize, count);
         for (0..count) |i| {
-            phdrs_offset_order[i] = i;
+            phdrs_off_order[i] = i;
             phdrs_vaddr_order[i] = i;
         }
-        std.sort.pdq(usize, phdrs_offset_order, &phdrs, offset_lessThanFn);
+        std.sort.pdq(usize, phdrs_off_order, &phdrs, offset_lessThanFn);
         std.sort.pdq(usize, phdrs_vaddr_order, &phdrs, vaddr_lessThanFn);
-        std.debug.assert(phdrs_offset_order.len != 0);
-        var containing_index = phdrs_offset_order[0];
+        const phdr_to_off = try gpa.alloc(usize, count);
+        const phdr_to_vaddr = try gpa.alloc(usize, count);
+        for (phdrs_off_order, phdrs_vaddr_order, 0..) |off_idx, vaddr_idx, idx| {
+            phdr_to_off[off_idx] = idx;
+            phdr_to_vaddr[vaddr_idx] = idx;
+        }
+        std.debug.assert(phdrs_off_order.len != 0);
+        var containing_index = phdrs_off_order[0];
         var containing_count: usize = 1;
         std.debug.assert(offsets[containing_index] == 0);
-        for (phdrs_offset_order[1..]) |index| {
+        for (phdrs_off_order[1..]) |index| {
             const offset = offsets[index];
             if (offset < (offsets[containing_index] + fileszs[containing_index])) {
                 std.debug.assert((offset + fileszs[index]) <= (offsets[containing_index] + fileszs[containing_index]));
@@ -196,10 +146,10 @@ pub const ElfModder: type = struct {
         }
         const top_off_segs = try gpa.alloc(usize, containing_count);
         containing_count = 0;
-        containing_index = phdrs_offset_order[0];
+        containing_index = phdrs_off_order[0];
         top_off_segs[containing_count] = 0;
         containing_count += 1;
-        for (phdrs_offset_order[1..], 1..) |index, i| {
+        for (phdrs_off_order[1..], 1..) |index, i| {
             const offset = offsets[index];
             if (offset >= (offsets[containing_index] + fileszs[containing_index])) {
                 containing_index = index;
@@ -249,8 +199,10 @@ pub const ElfModder: type = struct {
         return Self{
             .header = header,
             .phdrs = phdrs,
-            .phdrs_offset_order = phdrs_offset_order,
+            .phdrs_off_order = phdrs_off_order,
+            .phdr_to_off = phdr_to_off,
             .phdrs_vaddr_order = phdrs_vaddr_order,
+            .phdr_to_vaddr = phdr_to_vaddr,
             .top_off_segs = top_off_segs,
             .top_vaddr_segs = top_vaddr_segs,
             .adjustments = try gpa.alloc(usize, containing_count),
@@ -261,18 +213,21 @@ pub const ElfModder: type = struct {
     }
 
     pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
-        gpa.free(self.phdrs_offset_order);
+        gpa.free(self.phdrs_off_order);
         gpa.free(self.phdrs_vaddr_order);
+        gpa.free(self.phdr_to_off);
+        gpa.free(self.phdr_to_vaddr);
         gpa.free(self.top_off_segs);
         gpa.free(self.top_vaddr_segs);
         gpa.free(self.adjustments);
-        self.phdrs.deinit(gpa);
         gpa.free(self.shdrs_offset_order);
+        self.phdrs.deinit(gpa);
         self.shdrs.deinit(gpa);
     }
 
     // Get an identifier for the location within the file where additional data could be inserted.
     // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
+    // TODO: should not be looking at the previous and next segment by index but by vaddr_order.
     pub fn get_cave_option(self: *const Self, wanted_size: u64, p_type: PType, p_flags: PFlags) Error!?SegEdge {
         // NOTE: only dealing with PT_LOAD for now because the other segments frequently overlap with it which is annoyingg.
         std.debug.assert(p_type == PType.PT_LOAD);
@@ -284,16 +239,17 @@ pub const ElfModder: type = struct {
         while (i > 0) {
             i -= 1;
             const off_idx = self.top_off_segs[i];
-            const seg_idx = self.phdrs_offset_order[off_idx];
+            const seg_idx = self.phdrs_off_order[off_idx];
+            const vaddr_idx = self.phdr_to_vaddr[seg_idx];
             if ((@as(PType, @enumFromInt(p_types[seg_idx])) != p_type) or
                 (p_flagss[seg_idx] != @as(std.elf.Word, @bitCast(p_flags)))) continue;
             // NOTE: this assumes you dont have an upper bound on possible memory address.
-            if ((seg_idx == (p_vaddrs.len - 1)) or
-                ((p_vaddrs[seg_idx] + p_memszs[seg_idx] + wanted_size) < p_vaddrs[seg_idx + 1])) return SegEdge{
+            if ((vaddr_idx == (self.phdrs_vaddr_order.len - 1)) or
+                ((p_vaddrs[seg_idx] + p_memszs[seg_idx] + wanted_size) < p_vaddrs[self.phdrs_vaddr_order[vaddr_idx + 1]])) return SegEdge{
                 .top_idx = i,
                 .is_end = true,
             };
-            const prev_seg_mem_bound = (if (seg_idx == 0) 0 else (p_vaddrs[seg_idx - 1] + p_memszs[seg_idx - 1]));
+            const prev_seg_mem_bound = (if (vaddr_idx == 0) 0 else (p_vaddrs[self.phdrs_vaddr_order[vaddr_idx - 1]] + p_memszs[self.phdrs_vaddr_order[vaddr_idx - 1]]));
             if (p_vaddrs[seg_idx] > (wanted_size + prev_seg_mem_bound)) return SegEdge{
                 .top_idx = i,
                 .is_end = false,
@@ -369,12 +325,12 @@ pub const ElfModder: type = struct {
         const aligns = self.phdrs.items(Phdr64Fields.p_align);
         const offsets = self.phdrs.items(Phdr64Fields.p_offset);
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
-        const index = self.phdrs_offset_order[self.top_off_segs[top_idx]];
+        const index = self.phdrs_off_order[self.top_off_segs[top_idx]];
 
         // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
         // and for the case of a start edge whith enough space from the previous segment offset.
         const align_offset = (offsets[index] + (aligns[index] - (size % aligns[index]))) % aligns[index];
-        const temp = self.phdrs_offset_order[self.top_off_segs[top_idx - 1]];
+        const temp = self.phdrs_off_order[self.top_off_segs[top_idx - 1]];
         const prev_off_end = offsets[temp] + fileszs[temp];
         std.debug.assert(prev_off_end <= offsets[index]);
         const new_offset = if (offsets[index] > (size + prev_off_end))
@@ -396,7 +352,7 @@ pub const ElfModder: type = struct {
         const paddrs = self.phdrs.items(Phdr64Fields.p_paddr);
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
         const memszs = self.phdrs.items(Phdr64Fields.p_memsz);
-        const idx = self.phdrs_offset_order[self.top_off_segs[edge.top_idx]];
+        const idx = self.phdrs_off_order[self.top_off_segs[edge.top_idx]];
 
         const new_offset: u64 = if (edge.is_end) offsets[idx] else self.calc_new_offset(edge.top_idx, size);
         const first_adjust = if (edge.is_end) size else if (new_offset < offsets[idx]) size - (offsets[idx] - new_offset) else size + (new_offset - offsets[idx]);
@@ -405,9 +361,9 @@ pub const ElfModder: type = struct {
         var top_idx = edge.top_idx + 1;
         while (top_idx < self.top_off_segs.len) : (top_idx += 1) {
             const offset_seg_index = self.top_off_segs[top_idx];
-            const seg_index = self.phdrs_offset_order[offset_seg_index];
+            const seg_index = self.phdrs_off_order[offset_seg_index];
             const prev_offset_seg_index = self.top_off_segs[top_idx - 1];
-            const prev_seg_index = self.phdrs_offset_order[prev_offset_seg_index];
+            const prev_seg_index = self.phdrs_off_order[prev_offset_seg_index];
             const existing_gap = offsets[seg_index] - (offsets[prev_seg_index] + fileszs[prev_seg_index]);
             if (needed_size < existing_gap) break;
             needed_size -= existing_gap;
@@ -420,11 +376,11 @@ pub const ElfModder: type = struct {
             i -= 1;
             const top_index = i + edge.top_idx + 1;
             const top_off_idx = self.top_off_segs[top_index];
-            const top_seg_idx = self.phdrs_offset_order[top_off_idx];
-            try shift_forward(self.parse_source, offsets[top_seg_idx], offsets[top_seg_idx] + fileszs[top_seg_idx], self.adjustments[i]);
-            const final_off_idx = if ((top_index + 1) == self.top_off_segs.len) self.phdrs_offset_order.len else self.top_off_segs[top_index + 1];
+            const top_seg_idx = self.phdrs_off_order[top_off_idx];
+            try utils.shift_forward(self.parse_source, offsets[top_seg_idx], offsets[top_seg_idx] + fileszs[top_seg_idx], self.adjustments[i]);
+            const final_off_idx = if ((top_index + 1) == self.top_off_segs.len) self.phdrs_off_order.len else self.top_off_segs[top_index + 1];
             for (top_off_idx..final_off_idx) |seg_offset_index| {
-                const seg_index = self.phdrs_offset_order[seg_offset_index];
+                const seg_index = self.phdrs_off_order[seg_offset_index];
                 try self.set_phdr_field(seg_index, offsets[seg_index] + self.adjustments[i], "p_offset");
             }
         }
@@ -434,7 +390,7 @@ pub const ElfModder: type = struct {
         var sec_off_idx: usize = 0;
         for (edge.top_idx + 1..top_idx) |top_index| {
             const top_off_idx = self.top_off_segs[top_index];
-            const top_seg_idx = self.phdrs_offset_order[top_off_idx];
+            const top_seg_idx = self.phdrs_off_order[top_off_idx];
             while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] - self.adjustments[top_index - (edge.top_idx + 1)]))) : (sec_off_idx += 1) {}
             while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < ((offsets[top_seg_idx] - self.adjustments[top_index - (edge.top_idx + 1)]) + fileszs[top_seg_idx]))) : (sec_off_idx += 1) {
                 const sec_idx = self.shdrs_offset_order[sec_off_idx];
@@ -444,7 +400,7 @@ pub const ElfModder: type = struct {
 
         if (!edge.is_end) {
             const top_off_idx = self.top_off_segs[edge.top_idx];
-            const top_seg_idx = self.phdrs_offset_order[top_off_idx];
+            const top_seg_idx = self.phdrs_off_order[top_off_idx];
             sec_off_idx = 0;
             while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < offsets[top_seg_idx])) : (sec_off_idx += 1) {}
             while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] + fileszs[top_seg_idx]))) : (sec_off_idx += 1) {
@@ -458,14 +414,14 @@ pub const ElfModder: type = struct {
                 }
             }
 
-            try shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
+            try utils.shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
             try self.set_phdr_field(idx, vaddrs[idx] - size, "p_vaddr");
             // NOTE: not really sure about the following line.
             try self.set_phdr_field(idx, paddrs[idx] - size, "p_paddr");
             try self.set_phdr_field(idx, new_offset, "p_offset");
         } else {
             const top_off_idx = self.top_off_segs[edge.top_idx];
-            const top_seg_idx = self.phdrs_offset_order[top_off_idx];
+            const top_seg_idx = self.phdrs_off_order[top_off_idx];
             sec_off_idx = 0;
             while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < offsets[top_seg_idx])) : (sec_off_idx += 1) {}
             while ((sec_off_idx < self.shdrs_offset_order.len) and (shdr_offsets[self.shdrs_offset_order[sec_off_idx]] < (offsets[top_seg_idx] + fileszs[top_seg_idx]))) : (sec_off_idx += 1) {
@@ -507,7 +463,7 @@ pub const ElfModder: type = struct {
     }
 
     fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_offset)[context.self.phdrs_offset_order[rhs]]);
+        return std.math.order(context.lhs, context.self.phdrs.items(Phdr64Fields.p_offset)[context.self.phdrs_off_order[rhs]]);
     }
 
     pub fn off_to_addr(self: *const Self, off: u64) Error!u64 {
@@ -523,17 +479,18 @@ pub const ElfModder: type = struct {
     }
 
     pub fn off_to_idx(self: *const Self, off: u64) usize {
-        return self.phdrs_offset_order[self.top_off_segs[std.sort.lowerBound(usize, self.top_off_segs, CompareContext{ .self = self, .lsh = off + 1 }, off_compareFn) - 1]];
+        return self.phdrs_off_order[self.top_off_segs[std.sort.lowerBound(usize, self.top_off_segs, CompareContext{ .self = self, .lsh = off + 1 }, off_compareFn) - 1]];
     }
 };
 
-test "create_cave same output" {
+test "create cave same output" {
     // NOTE: technically I could build the binary from source but I am unsure of a way to ensure that it will result in the exact same binary each time. (which would make the test flaky, since it might be that there is no viable code cave.).
+    const test_path = "./tests/hello_world";
 
     // check regular output.
     const no_cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{"./tests/hello_world"},
+        .argv = &[_][]const u8{test_path},
     });
     defer std.testing.allocator.free(no_cave_result.stdout);
     defer std.testing.allocator.free(no_cave_result.stderr);
@@ -541,7 +498,7 @@ test "create_cave same output" {
     // create cave.
     // NOTE: need to put this in a block since the file must be closed before the next process can execute.
     {
-        var f = try std.fs.cwd().openFile("./tests/hello_world", .{ .mode = .read_write });
+        var f = try std.fs.cwd().openFile(test_path, .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const wanted_size = 0x1000;
@@ -554,7 +511,7 @@ test "create_cave same output" {
     // check output with a cave
     const cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{"./tests/hello_world"},
+        .argv = &[_][]const u8{test_path},
     });
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);
