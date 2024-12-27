@@ -83,12 +83,14 @@ pub const Patcher = struct {
     ) Error!Self {
         std.debug.assert(ftype == FileType.Elf);
         if (arch.IS_ENDIANABLE.contains(farch) and fendian != null) return Error.ArchNotEndianable;
+        var modder = try modelf.ElfModder.init(gpa, stream);
+        errdefer modder.deinit(gpa);
 
         return Self{
             .stream = stream,
             .ftype = ftype,
             .farch = farch,
-            .modder = try modelf.ElfModder.init(gpa, stream),
+            .modder = modder,
             .ctl_assembler = try ctl_asm.CtlFlowAssembler.init(farch, fmode, fendian),
             .csh = blk: {
                 var handle: capstone.csh = undefined;

@@ -107,6 +107,7 @@ pub const ElfModder: type = struct {
     pub fn init(gpa: std.mem.Allocator, parse_source: *std.io.StreamSource) Error!Self {
         var header = try std.elf.Header.read(parse_source);
         var phdrs = std.MultiArrayList(std.elf.Elf64_Phdr){};
+        errdefer phdrs.deinit(gpa);
         var prog_headers_iter = header.program_header_iterator(parse_source);
         var count: usize = 0;
         while (try prog_headers_iter.next()) |prog_header| {
@@ -118,7 +119,9 @@ pub const ElfModder: type = struct {
         const vaddrs = phdrs.items(Phdr64Fields.p_vaddr);
         const memszs = phdrs.items(Phdr64Fields.p_memsz);
         var phdrs_off_order = try gpa.alloc(usize, count);
+        errdefer gpa.free(phdrs_off_order);
         var phdrs_vaddr_order = try gpa.alloc(usize, count);
+        errdefer gpa.free(phdrs_vaddr_order);
         for (0..count) |i| {
             phdrs_off_order[i] = i;
             phdrs_vaddr_order[i] = i;
@@ -126,7 +129,9 @@ pub const ElfModder: type = struct {
         std.sort.pdq(usize, phdrs_off_order, &phdrs, offset_lessThanFn);
         std.sort.pdq(usize, phdrs_vaddr_order, &phdrs, vaddr_lessThanFn);
         const phdr_to_off = try gpa.alloc(usize, count);
+        errdefer gpa.free(phdr_to_off);
         const phdr_to_vaddr = try gpa.alloc(usize, count);
+        errdefer gpa.free(phdr_to_vaddr);
         for (phdrs_off_order, phdrs_vaddr_order, 0..) |off_idx, vaddr_idx, idx| {
             phdr_to_off[off_idx] = idx;
             phdr_to_vaddr[vaddr_idx] = idx;
@@ -145,6 +150,7 @@ pub const ElfModder: type = struct {
             }
         }
         const top_off_segs = try gpa.alloc(usize, containing_count);
+        errdefer gpa.free(top_off_segs);
         containing_count = 0;
         containing_index = phdrs_off_order[0];
         top_off_segs[containing_count] = 0;
@@ -170,6 +176,7 @@ pub const ElfModder: type = struct {
             }
         }
         const top_vaddr_segs = try gpa.alloc(usize, containing_count);
+        errdefer gpa.free(top_vaddr_segs);
         containing_count = 0;
         containing_index = phdrs_vaddr_order[0];
         top_vaddr_segs[containing_count] = 0;
@@ -184,6 +191,7 @@ pub const ElfModder: type = struct {
         }
 
         var shdrs = std.MultiArrayList(std.elf.Elf64_Shdr){};
+        errdefer shdrs.deinit(gpa);
         var section_headers_iter = header.section_header_iterator(parse_source);
         count = 0;
         while (try section_headers_iter.next()) |section_header| {
@@ -191,6 +199,7 @@ pub const ElfModder: type = struct {
             try shdrs.append(gpa, section_header);
         }
         var shdrs_offset_order = try gpa.alloc(usize, count);
+        errdefer gpa.free(shdrs_offset_order);
         for (0..count) |i| {
             shdrs_offset_order[i] = i;
         }
