@@ -69,6 +69,9 @@ pub const Phdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Phdr);
 pub const Shdr64Fields = std.meta.FieldEnum(std.elf.Elf64_Shdr);
 pub const Shdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Shdr);
 
+pub const Ehdr64Fields = std.meta.FieldEnum(std.elf.Elf64_Ehdr);
+pub const Ehdr32Fields = std.meta.FieldEnum(std.elf.Elf32_Ehdr);
+
 fn offset_lessThanFn(phdrs: *std.MultiArrayList(std.elf.Elf64_Phdr), lhs: usize, rhs: usize) bool {
     return (phdrs.items(Phdr64Fields.p_offset)[lhs] < phdrs.items(Phdr64Fields.p_offset)[rhs]) or
         ((phdrs.items(Phdr64Fields.p_offset)[lhs] == phdrs.items(Phdr64Fields.p_offset)[rhs]) and
@@ -272,30 +275,41 @@ pub const ElfModder: type = struct {
         try self.parse_source.seekTo(self.header.shoff + self.header.shentsize * index);
         if (self.header.is_64) {
             const T = std.meta.fieldInfo(std.elf.Elf64_Shdr, @field(Shdr64Fields, field_name)).type;
-            var temp_buf: [@sizeOf(T)]u8 = undefined;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-            try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Shdr, field_name));
-            // TODO: should be checking this.
-            std.debug.assert(try self.parse_source.read(&temp_buf) == @sizeOf(T));
-            try self.parse_source.seekTo(self.header.shoff + self.header.shentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Shdr, field_name));
             const temp2 = std.mem.toBytes(temp);
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(std.elf.Elf32_Shdr, @field(Shdr32Fields, field_name)).type;
-            var temp_buf: [@sizeOf(T)]u8 = undefined;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-            try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Shdr, field_name));
-            // TODO: should be checking this.
-            std.debug.assert(try self.parse_source.read(&temp_buf) == @sizeOf(T));
-            try self.parse_source.seekTo(self.header.shoff + self.header.shentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Shdr, field_name));
             const temp2 = std.mem.toBytes(temp);
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         }
         self.shdrs.items(@field(Shdr64Fields, field_name))[index] = @intCast(val);
+    }
+
+    fn set_ehdr_field(self: *Self, val: u64, comptime field_name: []const u8) Error!void {
+        const native_field_name = "e_" ++ field_name;
+        try self.parse_source.seekTo(0);
+        if (self.header.is_64) {
+            const T = std.meta.fieldInfo(std.elf.Elf64_Ehdr, @field(Ehdr64Fields, native_field_name)).type;
+            var temp: T = @intCast(val);
+            temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
+            try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Ehdr, native_field_name));
+            const temp2 = std.mem.toBytes(temp);
+            std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
+        } else {
+            const T = std.meta.fieldInfo(std.elf.Elf32_Ehdr, @field(Ehdr32Fields, native_field_name)).type;
+            var temp: T = @intCast(val);
+            temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
+            try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Ehdr, native_field_name));
+            const temp2 = std.mem.toBytes(temp);
+            std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
+        }
+        @field(self.header, field_name) = @intCast(val);
     }
 
     // NOTE: field changes must NOT change the memory order or offset order!
@@ -304,25 +318,15 @@ pub const ElfModder: type = struct {
         try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
         if (self.header.is_64) {
             const T = std.meta.fieldInfo(std.elf.Elf64_Phdr, @field(Phdr64Fields, field_name)).type;
-            var temp_buf: [@sizeOf(T)]u8 = undefined;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-            try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
-            // TODO: should be checking this.
-            std.debug.assert(try self.parse_source.read(&temp_buf) == @sizeOf(T));
-            try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf64_Phdr, field_name));
             const temp2 = std.mem.toBytes(temp);
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(std.elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
-            var temp_buf: [@sizeOf(T)]u8 = undefined;
             var temp: T = @intCast(val);
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-            try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Phdr, field_name));
-            // TODO: should be checking this.
-            std.debug.assert(try self.parse_source.read(&temp_buf) == @sizeOf(T));
-            try self.parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
             try self.parse_source.seekBy(@offsetOf(std.elf.Elf32_Phdr, field_name));
             const temp2 = std.mem.toBytes(temp);
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
@@ -351,6 +355,7 @@ pub const ElfModder: type = struct {
                 (aligns[index] + align_offset)) - (prev_off_end % aligns[index]));
         return new_offset;
     }
+
     // TODO: consider what happens when the original filesz and memsz are unequal.
     pub fn create_cave(self: *Self, size: u64, edge: SegEdge) Error!void {
         // NOTE: moving around the pheader table sounds like a bad idea.
@@ -362,6 +367,7 @@ pub const ElfModder: type = struct {
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
         const memszs = self.phdrs.items(Phdr64Fields.p_memsz);
         const idx = self.phdrs_off_order[self.top_off_segs[edge.top_idx]];
+        const shoff_top_idx = self.off_to_top_idx(self.header.shoff);
 
         const new_offset: u64 = if (edge.is_end) offsets[idx] else self.calc_new_offset(edge.top_idx, size);
         const first_adjust = if (edge.is_end) size else if (new_offset < offsets[idx]) size - (offsets[idx] - new_offset) else size + (new_offset - offsets[idx]);
@@ -380,6 +386,10 @@ pub const ElfModder: type = struct {
             if ((aligns[seg_index] != 0) and ((needed_size % aligns[seg_index]) != 0)) needed_size += aligns[seg_index] - (needed_size % aligns[seg_index]);
             self.adjustments[top_idx - (edge.top_idx + 1)] = needed_size;
         }
+        if (shoff_top_idx > edge.top_idx) {
+            std.debug.print("sections are past the adjusting segment, adjusting sections.", .{});
+            try self.set_ehdr_field(self.header.shoff + self.adjustments[shoff_top_idx - (edge.top_idx + 1)], "shoff");
+        }
         var i = top_idx - (edge.top_idx + 1);
         while (i > 0) {
             i -= 1;
@@ -393,6 +403,7 @@ pub const ElfModder: type = struct {
                 try self.set_phdr_field(seg_index, offsets[seg_index] + self.adjustments[i], "p_offset");
             }
         }
+
         const shdr_offsets = self.shdrs.items(Shdr64Fields.sh_offset);
         const shdr_sizes = self.shdrs.items(Shdr64Fields.sh_size);
         const shdr_addrs = self.shdrs.items(Shdr64Fields.sh_addr);
@@ -424,6 +435,11 @@ pub const ElfModder: type = struct {
             }
 
             try utils.shift_forward(self.parse_source, offsets[idx], offsets[idx] + fileszs[idx], new_offset + size - offsets[idx]);
+
+            if (shoff_top_idx == edge.top_idx) {
+                std.debug.print("2sections are past the adjusting segment, adjusting sections.", .{});
+                try self.set_ehdr_field(self.header.shoff + new_offset + size - offsets[idx], "shoff");
+            }
             try self.set_phdr_field(idx, vaddrs[idx] - size, "p_vaddr");
             // NOTE: not really sure about the following line.
             try self.set_phdr_field(idx, paddrs[idx] - size, "p_paddr");
@@ -480,15 +496,15 @@ pub const ElfModder: type = struct {
         const vaddrs = self.phdrs.items(Phdr64Fields.p_vaddr);
         const fileszs = self.phdrs.items(Phdr64Fields.p_filesz);
         const memszs = self.phdrs.items(Phdr64Fields.p_memsz);
-        const containnig_idx = self.off_to_idx(off);
+        const containnig_idx = self.phdrs_off_order[self.top_off_segs[self.off_to_top_idx(off)]];
         if (!(off < (offsets[containnig_idx] + fileszs[containnig_idx]))) return Error.OffsetNotLoaded;
         // NOTE: cant think of a case where the memsz will be smaller then the filesz (of a top level segment?).
         std.debug.assert(memszs[containnig_idx] >= fileszs[containnig_idx]);
         return vaddrs[containnig_idx] + off - offsets[containnig_idx];
     }
 
-    pub fn off_to_idx(self: *const Self, off: u64) usize {
-        return self.phdrs_off_order[self.top_off_segs[std.sort.lowerBound(usize, self.top_off_segs, CompareContext{ .self = self, .lsh = off + 1 }, off_compareFn) - 1]];
+    pub fn off_to_top_idx(self: *const Self, off: u64) usize {
+        return std.sort.lowerBound(usize, self.top_off_segs, CompareContext{ .self = self, .lhs = off + 1 }, off_compareFn) - 1;
     }
 };
 
