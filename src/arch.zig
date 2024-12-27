@@ -72,7 +72,7 @@ pub fn to_cs_arch(curr_arch: Arch) capstone.cs_arch {
     return switch (curr_arch) {
         .X86 => capstone.CS_ARCH_X86,
         .ARM => capstone.CS_ARCH_ARM,
-        .AARCH64 => capstone.CS_ARCH_ARM64,
+        .AARCH64 => capstone.CS_ARCH_AARCH64,
         .MIPS => capstone.CS_ARCH_MIPS,
         .PPC => capstone.CS_ARCH_PPC,
         .SPARC => capstone.CS_ARCH_SPARC,
