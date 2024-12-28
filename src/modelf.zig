@@ -550,7 +550,7 @@ test "create cave same output" {
         const wanted_size = 0x1000;
         var elf_modder: ElfModder = try ElfModder.init(std.testing.allocator, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        const option = (try elf_modder.get_cave_option(wanted_size, FileRangeFlags{ .execute = true, .read = true })).?;
+        const option = (try elf_modder.get_cave_option(wanted_size, FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
         try elf_modder.create_cave(wanted_size, option);
     }
 
