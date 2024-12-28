@@ -108,10 +108,10 @@ pub const Patcher = struct {
     }
 
     pub fn pure_patch(self: *Self, addr: u64, patch: []const u8) !void {
-        const offsets = self.modder.phdrs.items(modelf.Phdr64Fields.p_offset);
-        const fileszs = self.modder.phdrs.items(modelf.Phdr64Fields.p_filesz);
-        const vaddrs = self.modder.phdrs.items(modelf.Phdr64Fields.p_vaddr);
-        const memszs = self.modder.phdrs.items(modelf.Phdr64Fields.p_filesz);
+        const offsets = self.modder.ranges.items(modelf.FileRangeFields.off);
+        const fileszs = self.modder.ranges.items(modelf.FileRangeFields.filesz);
+        const vaddrs = self.modder.ranges.items(modelf.FileRangeFields.addr);
+        const memszs = self.modder.ranges.items(modelf.FileRangeFields.filesz);
         // TODO: think about this 20 (pull out of my ass as the maximum partial instruction size that might be needed).
         var buff: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW + 20]u8 = undefined;
         const off_before_patch = try self.modder.addr_to_off(addr);
@@ -123,8 +123,8 @@ pub const Patcher = struct {
         const insn_to_move_siz = min_insn_size(self.csh, ctl_trasnfer_size, buff[0..max]);
         const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
         std.debug.assert(insn_to_move_siz < buff.len);
-        const cave_option = (try self.modder.get_cave_option(cave_size, modelf.PType.PT_LOAD, modelf.PFlags{ .PF_X = true, .PF_R = true })) orelse return Error.NoFreeSpace;
-        const seg_idx = self.modder.phdrs_off_order[self.modder.top_off_segs[cave_option.top_idx]];
+        const cave_option = (try self.modder.get_cave_option(cave_size, modelf.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
+        const seg_idx = self.modder.off_sort[self.modder.top_offs[cave_option.top_idx]];
         try self.modder.create_cave(cave_size, cave_option);
         const off_after_patch = try self.modder.addr_to_off(addr);
         // TODO: mismatch between filesz and memsz is gonna screw me over.
