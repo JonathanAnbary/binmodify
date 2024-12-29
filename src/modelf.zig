@@ -186,26 +186,6 @@ pub const ElfModder: type = struct {
             range_to_off[off_idx] = idx;
             range_to_addr[addr_idx] = idx;
         }
-        const addrs = ranges.items(FileRangeFields.addr);
-        const memszs = ranges.items(FileRangeFields.memsz);
-        const addr_min = addrs[addr_sort[0]];
-        const addr_max = addrs[addr_sort[addr_sort.len - 1]] + memszs[addr_sort[addr_sort.len - 1]];
-        const full = addr_max - addr_min;
-        std.debug.print("\n", .{});
-        for (addr_sort) |idx| {
-            const start = addrs[idx] - addr_min;
-            const end = addrs[idx] + memszs[idx] - addr_min;
-            std.debug.print("\n{x} until {x}\n", .{ addrs[idx], addrs[idx] + memszs[idx] });
-            std.debug.print("{} - {}\n", .{ ((142 * start) / full), ((142 * end) / full) });
-            std.debug.print("<", .{});
-            for (0..142) |i| {
-                if ((((142 * start) / full) <= i) and (((142 * end) / full) >= i)) {
-                    std.debug.print("-", .{});
-                } else std.debug.print(" ", .{});
-            }
-            std.debug.print(">", .{});
-        }
-        std.debug.print("\n", .{});
         const offs = ranges.items(FileRangeFields.off);
         const fileszs = ranges.items(FileRangeFields.filesz);
         std.debug.assert(ranges.len != 0);
@@ -235,8 +215,8 @@ pub const ElfModder: type = struct {
                 containing_count += 1;
             }
         }
-        // const addrs = ranges.items(FileRangeFields.addr);
-        // const memszs = ranges.items(FileRangeFields.memsz);
+        const addrs = ranges.items(FileRangeFields.addr);
+        const memszs = ranges.items(FileRangeFields.memsz);
         containing_index = addr_sort[0];
         containing_count = 1;
         std.debug.assert(addrs[containing_index] == 0);
@@ -339,7 +319,6 @@ pub const ElfModder: type = struct {
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(elf.Elf64_Shdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("\nwriting {} bytes at {x} in set_shdr_field.\n", .{ temp2.len, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(elf.Elf32_Shdr, @field(Shdr32Fields, field_name)).type;
@@ -347,7 +326,6 @@ pub const ElfModder: type = struct {
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(elf.Elf32_Shdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("\nwriting {} bytes at {x} in set_shdr_field.\n", .{ temp2.len, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         }
         // self.shdrs.items(@field(Shdr64Fields, field_name))[index] = @intCast(val);
@@ -362,7 +340,6 @@ pub const ElfModder: type = struct {
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(elf.Elf64_Ehdr, native_field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("\nwriting {} bytes at {x} in set_ehdr_field.\n", .{ temp2.len, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(elf.Elf32_Ehdr, @field(Ehdr32Fields, native_field_name)).type;
@@ -370,7 +347,6 @@ pub const ElfModder: type = struct {
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(elf.Elf32_Ehdr, native_field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("\nwriting {} bytes at {x} in set_ehdr_field.\n", .{ temp2.len, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         }
         @field(self.header, field_name) = @intCast(val);
@@ -386,7 +362,6 @@ pub const ElfModder: type = struct {
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(elf.Elf64_Phdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("\nwriting {} bytes at {x} in set_phdr_field.\n", .{ temp2.len, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         } else {
             const T = std.meta.fieldInfo(elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
@@ -394,7 +369,6 @@ pub const ElfModder: type = struct {
             temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
             try self.parse_source.seekBy(@offsetOf(elf.Elf32_Phdr, field_name));
             const temp2 = std.mem.toBytes(temp);
-            std.debug.print("\nwriting {} bytes at {x} in set_phdr_field.\n", .{ temp2.len, try self.parse_source.getPos() });
             std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
         }
         // self.phdrs.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
@@ -452,8 +426,6 @@ pub const ElfModder: type = struct {
             self.adjustments[top_idx - (edge.top_idx + 1)] = needed_size;
         }
         if (shoff_top_idx > edge.top_idx) {
-            std.debug.print("\nsections are past the adjusting segment, adjusting sections. ({x} > {x})\n", .{ offs[self.off_sort[self.top_offs[shoff_top_idx]]], offs[self.off_sort[self.top_offs[edge.top_idx]]] });
-            std.debug.print("\nchanging shoff from {x} to {x}\n", .{ self.header.shoff, self.header.shoff + self.adjustments[shoff_top_idx - (edge.top_idx + 1)] });
             try self.set_ehdr_field(self.header.shoff + self.adjustments[shoff_top_idx - (edge.top_idx + 1)], "shoff");
         }
         var i = top_idx - (edge.top_idx + 1);
@@ -462,7 +434,6 @@ pub const ElfModder: type = struct {
             const top_index = i + edge.top_idx + 1;
             const top_off_idx = self.top_offs[top_index];
             const top_range_idx = self.off_sort[top_off_idx];
-            std.debug.print("\nshifting forward from {x} to {x} by {x}\n", .{ offs[top_range_idx], offs[top_range_idx] + fileszs[top_range_idx], self.adjustments[i] });
             try utils.shift_forward(self.parse_source, offs[top_range_idx], offs[top_range_idx] + fileszs[top_range_idx], self.adjustments[i]);
             const final_off_idx = if ((top_index + 1) == self.top_offs.len) self.ranges.len else self.top_offs[top_index + 1];
             for (top_off_idx..final_off_idx) |off_idx| {
@@ -480,10 +451,8 @@ pub const ElfModder: type = struct {
             const top_off_idx = self.top_offs[edge.top_idx];
             const final_off_idx = if ((edge.top_idx + 1) == self.top_offs.len) self.ranges.len else self.top_offs[edge.top_idx + 1];
             if (shoff_top_idx == edge.top_idx) {
-                std.debug.print("2sections are past the adjusting segment, adjusting sections.", .{});
                 try self.set_ehdr_field(self.header.shoff + new_offset + size - offs[idx], "shoff");
             }
-            std.debug.print("\nshifting forward from {x} to {x} by {x}\n", .{ offs[idx], offs[idx] + fileszs[idx], new_offset + size - offs[idx] });
             try utils.shift_forward(self.parse_source, offs[idx], offs[idx] + fileszs[idx], new_offset + size - offs[idx]);
             for (top_off_idx..final_off_idx) |off_idx| {
                 const index = self.off_sort[off_idx];
