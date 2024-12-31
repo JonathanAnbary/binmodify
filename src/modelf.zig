@@ -3,29 +3,6 @@ const native_endian = @import("builtin").target.cpu.arch.endian();
 const utils = @import("utils.zig");
 const elf = std.elf;
 
-pub const PType: type = enum(u32) {
-    PT_NULL = elf.PT_NULL,
-    PT_LOAD = elf.PT_LOAD,
-    PT_DYNAMIC = elf.PT_DYNAMIC,
-    PT_INTERP = elf.PT_INTERP,
-    PT_NOTE = elf.PT_NOTE,
-    PT_SHLIB = elf.PT_SHLIB,
-    PT_PHDR = elf.PT_PHDR,
-    PT_TLS = elf.PT_TLS,
-    PT_NUM = elf.PT_NUM,
-    PT_LOOS = elf.PT_LOOS,
-    PT_GNU_EH_FRAME = elf.PT_GNU_EH_FRAME,
-    PT_GNU_STACK = elf.PT_GNU_STACK,
-    PT_GNU_RELRO = elf.PT_GNU_RELRO,
-    PT_LOSUNW = elf.PT_LOSUNW,
-    // PT_SUNWBSS = elf.PT_SUNWBSS,
-    PT_SUNWSTACK = elf.PT_SUNWSTACK,
-    PT_HISUNW = elf.PT_HISUNW,
-    // PT_HIOS = elf.PT_HIOS,
-    PT_LOPROC = elf.PT_LOPROC,
-    PT_HIPROC = elf.PT_HIPROC,
-};
-
 const p_flags_type = std.meta.fieldInfo(elf.Elf64_Phdr, @field(Phdr64Fields, "p_flags")).type;
 
 pub const PFlags: type = packed struct(p_flags_type) {

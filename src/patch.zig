@@ -1,8 +1,11 @@
 const std = @import("std");
-const modelf = @import("modelf.zig");
+
 const arch = @import("arch.zig");
-const capstone = @cImport(@cInclude("capstone/capstone.h"));
+const modelf = @import("modelf.zig");
+const modcoff = @import("modcoff.zig");
 const ctl_asm = @import("ctl_asm.zig");
+
+const capstone = @cImport(@cInclude("capstone/capstone.h"));
 
 const CSError = error{
     CS_ERR_MEM,
@@ -43,7 +46,7 @@ fn to_zig_err(err: capstone.cs_err) CSError!void {
     };
 }
 
-const Error = modelf.Error || CSError || arch.Error;
+const Error = modcoff.Error || modelf.Error || CSError || arch.Error;
 
 fn min_insn_size(handle: capstone.csh, size: u64, code: []const u8) u64 {
     const insn = capstone.cs_malloc(handle);
@@ -56,15 +59,36 @@ fn min_insn_size(handle: capstone.csh, size: u64, code: []const u8) u64 {
 }
 
 pub const FileType = enum {
-    Elf,
-    PE,
+    ELF,
+    COFF,
+};
+
+const Modder = union(FileType) {
+    ELF: modelf.ElfModder,
+    COFF: modcoff.CoffModder,
+
+    const Self = @This();
+
+    fn init(gpa: std.mem.Allocator, ftype: FileType, parse_source: *std.io.StreamSource) Self {
+        return switch (ftype) {
+            .ELF => modelf.ElfModder.init(gpa, parse_source),
+            .COFF => modcoff.CoffModder.init(gpa, parse_source),
+        };
+    }
+
+    fn deinit(self: *Self, gpa: std.mem.Allocator) void {
+        switch (self) {
+            .ELF => self.ELF.deinit(gpa),
+            .COFF => self.COFF.deinit(gpa),
+        }
+    }
 };
 
 pub const Patcher = struct {
     stream: *std.io.StreamSource,
     ftype: FileType,
     farch: arch.Arch,
-    modder: modelf.ElfModder,
+    modder: Modder,
     ctl_assembler: ctl_asm.CtlFlowAssembler,
     csh: capstone.csh,
     // NOTE: mode may be something that changes between patches, not sure about it.
@@ -81,9 +105,8 @@ pub const Patcher = struct {
         fmode: arch.Mode,
         fendian: ?arch.Endian,
     ) Error!Self {
-        std.debug.assert(ftype == FileType.Elf);
         if (arch.IS_ENDIANABLE.contains(farch) and fendian != null) return Error.ArchNotEndianable;
-        var modder = try modelf.ElfModder.init(gpa, stream);
+        var modder: Modder = Modder.init(gpa, ftype, stream);
         errdefer modder.deinit(gpa);
 
         return Self{
@@ -108,16 +131,13 @@ pub const Patcher = struct {
     }
 
     pub fn pure_patch(self: *Self, addr: u64, patch: []const u8) !void {
-        const offsets = self.modder.ranges.items(modelf.FileRangeFields.off);
-        const fileszs = self.modder.ranges.items(modelf.FileRangeFields.filesz);
-        const vaddrs = self.modder.ranges.items(modelf.FileRangeFields.addr);
-        const memszs = self.modder.ranges.items(modelf.FileRangeFields.filesz);
         // TODO: think about this 20 (pull out of my ass as the maximum partial instruction size that might be needed).
         var buff: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW + 20]u8 = undefined;
         const off_before_patch = try self.modder.addr_to_off(addr);
         try self.stream.seekTo(off_before_patch);
         const max = try self.stream.read(&buff);
-        const ctl_trasnfer_size = ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.farch).?.len;
+        const ctl_trasnfer_size = (ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.farch) orelse return Error.ArchNotSupported).len;
+        modelf.
         const idx = self.modder.addr_to_idx(addr);
         std.debug.assert((addr + ctl_trasnfer_size) <= (vaddrs[idx] + memszs[idx]));
         const insn_to_move_siz = min_insn_size(self.csh, ctl_trasnfer_size, buff[0..max]);
@@ -168,7 +188,7 @@ test "elf nop patch no difference" {
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
-        var patcher: Patcher = try Patcher.init(std.testing.allocator, &stream, FileType.Elf, arch.Arch.X86, arch.Mode.MODE_64, null);
+        var patcher: Patcher = try Patcher.init(std.testing.allocator, &stream, FileType.ELF, arch.Arch.X86, arch.Mode.MODE_64, null);
         defer patcher.deinit(std.testing.allocator) catch |err| std.debug.panic("Patcher deinit failed {}", .{err});
         try patcher.pure_patch(0x1001B3C, &patch);
     }

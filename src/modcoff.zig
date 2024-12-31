@@ -245,7 +245,7 @@ test "create_cave same output" {
     // NOTE: technically I could build the binary from source but I am unsure of a way to ensure that it will result in the exact same binary each time. (which would make the test flaky, since it might be that there is no viable code cave.).
 
     const test_path = "./tests/hello_world.exe";
-    const test_with_cave = "./create_cave_same_output_coff";
+    const test_with_cave = "./create_cave_same_output_coff.exe";
     const cwd: std.fs.Dir = std.fs.cwd();
     try cwd.copyFile(test_path, cwd, test_with_cave, .{});
 
@@ -264,10 +264,10 @@ test "create_cave same output" {
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const wanted_size = 0x1000;
-        var elf_modder: CoffModder = try CoffModder.init(std.testing.allocator, &stream);
-        defer elf_modder.deinit(std.testing.allocator);
-        const option = (try elf_modder.get_cave_option(wanted_size, std.coff.SectionHeaderFlags{ .MEM_READ = 1, .MEM_EXECUTE = 1 })).?;
-        try elf_modder.create_cave(wanted_size, option);
+        var coff_modder: CoffModder = try CoffModder.init(std.testing.allocator, &stream);
+        defer coff_modder.deinit(std.testing.allocator);
+        const option = (try coff_modder.get_cave_option(wanted_size, std.coff.SectionHeaderFlags{ .MEM_READ = 1, .MEM_EXECUTE = 1 })).?;
+        try coff_modder.create_cave(wanted_size, option);
     }
 
     // check output with a cave
