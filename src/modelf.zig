@@ -553,11 +553,14 @@ pub const ElfModder: type = struct {
 test "create cave same output" {
     // NOTE: technically I could build the binary from source but I am unsure of a way to ensure that it will result in the exact same binary each time. (which would make the test flaky, since it might be that there is no viable code cave.).
     const test_path = "./tests/hello_world";
+    const test_with_cave = "./create_cave_same_output_elf";
+    const cwd: std.fs.Dir = std.fs.cwd();
+    try cwd.copyFile(test_path, cwd, test_with_cave, .{});
 
     // check regular output.
     const no_cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_path},
+        .argv = &[_][]const u8{test_with_cave},
     });
     defer std.testing.allocator.free(no_cave_result.stdout);
     defer std.testing.allocator.free(no_cave_result.stderr);
@@ -565,7 +568,7 @@ test "create cave same output" {
     // create cave.
     // NOTE: need to put this in a block since the file must be closed before the next process can execute.
     {
-        var f = try std.fs.cwd().openFile(test_path, .{ .mode = .read_write });
+        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const wanted_size = 0xfff;
@@ -578,7 +581,7 @@ test "create cave same output" {
     // check output with a cave
     const cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_path},
+        .argv = &[_][]const u8{test_with_cave},
     });
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);

@@ -148,11 +148,15 @@ pub const Patcher = struct {
 
 test "elf nop patch no difference" {
     // NOTE: technically I could build the binary from source but I am unsure of a way to ensure that it will result in the exact same binary each time. (which would make the test flaky, since it might be that there is no viable code cave.).
+    const test_path = "./tests/hello_world";
+    const test_with_patch_path = "./elf_nop_patch_no_difference";
+    const cwd: std.fs.Dir = std.fs.cwd();
+    try cwd.copyFile(test_path, cwd, test_with_patch_path, .{});
 
     // check regular output.
     const no_patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{"./tests/hello_world"},
+        .argv = &[_][]const u8{test_with_patch_path},
     });
     defer std.testing.allocator.free(no_patch_result.stdout);
     defer std.testing.allocator.free(no_patch_result.stderr);
@@ -160,7 +164,7 @@ test "elf nop patch no difference" {
     // create cave.
     // NOTE: need to put this in a block since the file must be closed before the next process can execute.
     {
-        var f = try std.fs.cwd().openFile("./tests/hello_world", .{ .mode = .read_write });
+        var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
@@ -172,7 +176,7 @@ test "elf nop patch no difference" {
     // check output with a cave
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{"./tests/hello_world"},
+        .argv = &[_][]const u8{test_with_patch_path},
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
