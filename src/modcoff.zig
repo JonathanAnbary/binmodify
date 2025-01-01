@@ -2,15 +2,13 @@ const std = @import("std");
 const native_endian = @import("builtin").target.cpu.arch.endian();
 const utils = @import("utils.zig");
 
-fn off_lessThanFn(sechdrs: std.MultiArrayList(std.coff.SectionHeader), lhs: usize, rhs: usize) bool {
-    const temp = sechdrs.items(SectionHeaderFields.pointer_to_raw_data);
-    return temp[lhs] < temp[rhs];
+fn off_lessThanFn(sechdrs: []align(1) const std.coff.SectionHeader, lhs: usize, rhs: usize) bool {
+    return sechdrs[lhs].pointer_to_raw_data < sechdrs[rhs].pointer_to_raw_data;
 }
 
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
-fn vaddr_lessThanFn(sechdrs: std.MultiArrayList(std.coff.SectionHeader), lhs: usize, rhs: usize) bool {
-    const temp = sechdrs.items(SectionHeaderFields.virtual_address);
-    return temp[lhs] < temp[rhs];
+fn addr_lessThanFn(sechdrs: []align(1) const std.coff.SectionHeader, lhs: usize, rhs: usize) bool {
+    return sechdrs[lhs].virtual_address < sechdrs[rhs].virtual_address;
 }
 
 pub const Error = error{
@@ -29,53 +27,47 @@ const SectionHeaderFields = std.meta.FieldEnum(std.coff.SectionHeader);
 
 pub const CoffModder: type = struct {
     coff: std.coff.Coff,
-    sechdrs: std.MultiArrayList(std.coff.SectionHeader),
     sechdrs_off_order: []usize,
     sec_to_off: []usize,
-    sechdrs_vaddr_order: []usize,
-    sec_to_vaddr: []usize,
+    sechdrs_addr_order: []usize,
+    sec_to_addr: []usize,
     adjustments: []usize,
     parse_source: *std.io.StreamSource,
-    data: []const u8,
+    data: []u8,
 
     const Self = @This();
 
     pub fn init(gpa: std.mem.Allocator, stream: *std.io.StreamSource) !Self {
         const data = try gpa.alloc(u8, try stream.getEndPos());
         errdefer gpa.free(data);
+        try stream.seekTo(0);
+        std.debug.assert(try stream.read(data) == data.len);
         const coff = try std.coff.Coff.init(data, false);
-        var sechdrs = std.MultiArrayList(std.coff.SectionHeader){};
-        errdefer sechdrs.deinit(gpa);
-        const sechdrs_raw = coff.getSectionHeaders();
-        try sechdrs.ensureTotalCapacity(gpa, sechdrs_raw.len);
-        for (sechdrs_raw) |sechdr| {
-            sechdrs.appendAssumeCapacity(sechdr);
-        }
-        const sechdrs_vaddr_order = try gpa.alloc(usize, sechdrs.len);
-        errdefer gpa.free(sechdrs_vaddr_order);
+        const sechdrs = coff.getSectionHeaders();
+        const sechdrs_addr_order = try gpa.alloc(usize, sechdrs.len);
+        errdefer gpa.free(sechdrs_addr_order);
         const sechdrs_off_order = try gpa.alloc(usize, sechdrs.len);
         errdefer gpa.free(sechdrs_off_order);
         for (0..sechdrs.len) |i| {
-            sechdrs_vaddr_order[i] = i;
+            sechdrs_addr_order[i] = i;
             sechdrs_off_order[i] = i;
         }
-        std.sort.pdq(usize, sechdrs_vaddr_order, sechdrs, off_lessThanFn);
-        std.sort.pdq(usize, sechdrs_off_order, sechdrs, vaddr_lessThanFn);
+        std.sort.pdq(usize, sechdrs_addr_order, sechdrs, off_lessThanFn);
+        std.sort.pdq(usize, sechdrs_off_order, sechdrs, addr_lessThanFn);
         const sec_to_off = try gpa.alloc(usize, sechdrs.len);
         errdefer gpa.free(sec_to_off);
-        const sec_to_vaddr = try gpa.alloc(usize, sechdrs.len);
-        errdefer gpa.free(sec_to_vaddr);
-        for (sechdrs_off_order, sechdrs_vaddr_order, 0..) |off_idx, vaddr_idx, idx| {
+        const sec_to_addr = try gpa.alloc(usize, sechdrs.len);
+        errdefer gpa.free(sec_to_addr);
+        for (sechdrs_off_order, sechdrs_addr_order, 0..) |off_idx, addr_idx, idx| {
             sec_to_off[off_idx] = idx;
-            sec_to_vaddr[vaddr_idx] = idx;
+            sec_to_addr[addr_idx] = idx;
         }
         return Self{
             .coff = coff,
-            .sechdrs = sechdrs,
-            .sechdrs_vaddr_order = sechdrs_vaddr_order,
+            .sechdrs_addr_order = sechdrs_addr_order,
             .sec_to_off = sec_to_off,
             .sechdrs_off_order = sechdrs_off_order,
-            .sec_to_vaddr = sec_to_vaddr,
+            .sec_to_addr = sec_to_addr,
             .adjustments = try gpa.alloc(usize, sechdrs.len),
             .parse_source = stream,
             .data = data,
@@ -84,64 +76,75 @@ pub const CoffModder: type = struct {
 
     pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
         gpa.free(self.sechdrs_off_order);
-        gpa.free(self.sechdrs_vaddr_order);
-        gpa.free(self.sec_to_vaddr);
+        gpa.free(self.sechdrs_addr_order);
+        gpa.free(self.sec_to_addr);
         gpa.free(self.adjustments);
         gpa.free(self.sec_to_off);
         gpa.free(self.data);
-        self.sechdrs.deinit(gpa);
     }
 
     // Get an identifier for the location within the file where additional data could be inserted.
     // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
     pub fn get_cave_option(self: *const Self, wanted_size: u64, flags: utils.FileRangeFlags) !?SecEdge {
-        const flagss = self.sechdrs.items(SectionHeaderFields.flags);
-        const virtual_addresses = self.sechdrs.items(SectionHeaderFields.virtual_address);
-        const virtual_sizes = self.sechdrs.items(SectionHeaderFields.virtual_size);
-        const sec_flags = std.coff.SectionHeaderFlags{ .MEM_READ = @intFromBool(flags.read), .MEM_WRITE = @intFromBool(flags.write), .MEM_EXECUTE = @intFromBool(flags.execute) };
+        const sechdrs = self.coff.getSectionHeaders();
         var i = self.sechdrs_off_order.len;
+        std.debug.print("\nlooking for flags {}\n", .{flags});
         while (i > 0) {
             i -= 1;
             const sec_idx = self.sechdrs_off_order[i];
-            if (flagss[sec_idx] != sec_flags) continue;
+            const sec_flags = utils.FileRangeFlags{ .read = sechdrs[sec_idx].flags.MEM_READ == 1, .write = sechdrs[sec_idx].flags.MEM_WRITE == 1, .execute = sechdrs[sec_idx].flags.MEM_EXECUTE == 1 };
+            std.debug.print("sec_idx {} has flags {}\n", .{ sec_idx, sec_flags });
+            if (sec_flags != flags) continue;
+            std.debug.print("sec_end_addr = {x}\n", .{sechdrs[sec_idx].virtual_address + sechdrs[sec_idx].virtual_size + wanted_size});
+            std.debug.print("next sec start = {x}\n", .{if (self.sec_to_addr[sec_idx] == (sechdrs.len - 1)) std.math.maxInt(u64) else @as(usize, @intCast(sechdrs[self.sec_to_addr[sec_idx] + 1].virtual_address))});
             // NOTE: this assumes you dont have an upper bound on possible memory address.
-            if ((self.sec_to_vaddr[sec_idx] == (self.sechdrs.len - 1)) or
-                ((virtual_addresses[sec_idx] + virtual_sizes[sec_idx] + wanted_size) < virtual_addresses[self.sec_to_vaddr[sec_idx] + 1])) return SecEdge{
+            if ((self.sec_to_addr[sec_idx] == (sechdrs.len - 1)) or
+                ((sechdrs[sec_idx].virtual_address + sechdrs[sec_idx].virtual_size + wanted_size) < sechdrs[self.sec_to_addr[sec_idx] + 1].virtual_address)) return SecEdge{
                 .sec_idx = sec_idx,
                 .is_end = true,
             };
-            const prev_sec_mem_bound = (if (self.sec_to_vaddr[sec_idx] == 0) 0 else (virtual_addresses[self.sec_to_vaddr[sec_idx] - 1] + virtual_sizes[self.sec_to_vaddr[sec_idx] - 1]));
-            if (virtual_addresses[sec_idx] > (wanted_size + prev_sec_mem_bound)) return SecEdge{
-                .sec_idx = sec_idx,
-                .is_end = false,
-            };
+            // NOTE: not doing start caves since I am not sure how to resolve the alignment requirements of section start address.
+            // std.debug.print("sec_start_addr = {x}\n", .{sechdrs[sec_idx].virtual_address});
+            // const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
+            // std.debug.print("prev sec end = {x}\n", .{prev_sec_mem_bound});
+            // if (sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
+            //     .sec_idx = sec_idx,
+            //     .is_end = false,
+            // };
         }
         return null;
     }
 
     fn calc_new_offset(self: *const Self, index: usize, size: u64) u64 {
-        const pointers_to_raw_data = self.sechdrs.items(SectionHeaderFields.pointer_to_raw_data);
-        const sizes_of_raw_data = self.sechdrs.items(SectionHeaderFields.size_of_raw_data);
         // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
         // and for the case of a start edge whith enough space from the previous segment offset.
-        const alignment = self.sechdrs.get(index).getAlignment() orelse 1;
-        const align_offset = (pointers_to_raw_data[index] + (alignment - (size % alignment))) % alignment;
+        const sechdrs = self.coff.getSectionHeaders();
+        const hdr = self.coff.getOptionalHeader();
+        const file_alignment = switch (hdr.magic) {
+            std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => self.coff.getOptionalHeader32().file_alignment,
+            std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => self.coff.getOptionalHeader64().file_alignment,
+            else => unreachable, // We assume we have validated the header already
+        };
+
+        const align_offset = (sechdrs[index].pointer_to_raw_data + (file_alignment - (size % file_alignment))) % file_alignment;
         const temp = self.sechdrs_off_order[self.sec_to_off[index] - 1];
-        const prev_off_end = pointers_to_raw_data[temp] + sizes_of_raw_data[temp];
-        std.debug.assert(prev_off_end <= pointers_to_raw_data[index]);
-        const new_offset = if (pointers_to_raw_data[index] > (size + prev_off_end))
-            (pointers_to_raw_data[index] - size)
+        const prev_off_end = sechdrs[temp].pointer_to_raw_data + sechdrs[temp].size_of_raw_data;
+        std.debug.assert(prev_off_end <= sechdrs[index].pointer_to_raw_data);
+        const new_offset = if (sechdrs[index].pointer_to_raw_data > (size + prev_off_end))
+            (sechdrs[index].pointer_to_raw_data - size)
         else
-            (prev_off_end + (if ((prev_off_end % alignment) <= align_offset)
+            (prev_off_end + (if ((prev_off_end % file_alignment) <= align_offset)
                 (align_offset)
             else
-                (alignment + align_offset)) - (prev_off_end % alignment));
+                (file_alignment + align_offset)) - (prev_off_end % file_alignment));
         return new_offset;
     }
 
     // NOTE: field changes must NOT change the memory order or offset order!
     // TODO: consider what to do when setting the segment which holds the phdrtable itself.
     fn set_sechdr_field(self: *Self, index: usize, val: u64, comptime field_name: []const u8) !void {
+        const sechdrs = self.coff.getSectionHeaders();
+        std.debug.print("setting {s}[{}] from {x} to {x}\n", .{ field_name, index, @field(sechdrs[index], field_name), val });
         const coff_header = self.coff.getCoffHeader();
         const offset = self.coff.coff_header_offset + @sizeOf(std.coff.CoffHeader) + coff_header.size_of_optional_header;
         try self.parse_source.seekTo(offset + @sizeOf(std.coff.SectionHeader) * index);
@@ -150,19 +153,21 @@ pub const CoffModder: type = struct {
         try self.parse_source.seekBy(@offsetOf(std.coff.SectionHeader, field_name));
         const temp2 = std.mem.toBytes(temp);
         std.debug.assert(try self.parse_source.write(&temp2) == @sizeOf(T));
-        self.sechdrs.items(@field(SectionHeaderFields, field_name))[index] = @intCast(val);
+        // TODO: look at whether or not this breaks the consts guarantees expected by std.coff.
+        std.mem.copyForwards(u8, self.data[offset + @sizeOf(std.coff.SectionHeader) * index + @offsetOf(std.coff.SectionHeader, field_name) ..][0..temp2.len], &temp2);
+        // self.sechdrs.items(@field(SectionHeaderFields, field_name))[index] = @intCast(val);
     }
 
-    // TODO: consider what happens when the original filesz and memsz are unequal.
     pub fn create_cave(self: *Self, size: u64, edge: SecEdge) !void {
-        // NOTE: moving around the pheader table sounds like a bad idea.
-        std.debug.assert(edge.sec_idx != 0);
-        const pointers_to_raw_data = self.sechdrs.items(SectionHeaderFields.pointer_to_raw_data);
-        const sizes_of_raw_data = self.sechdrs.items(SectionHeaderFields.size_of_raw_data);
-        const virtual_addresses = self.sechdrs.items(SectionHeaderFields.virtual_address);
-        const virtual_sizes = self.sechdrs.items(SectionHeaderFields.virtual_size);
+        const sechdrs = self.coff.getSectionHeaders();
+        const hdr = self.coff.getOptionalHeader();
+        const file_alignment = switch (hdr.magic) {
+            std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => self.coff.getOptionalHeader32().file_alignment,
+            std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => self.coff.getOptionalHeader64().file_alignment,
+            else => unreachable, // We assume we have validated the header already
+        };
 
-        const offset = pointers_to_raw_data[edge.sec_idx];
+        const offset = sechdrs[edge.sec_idx].pointer_to_raw_data;
         const new_offset: u64 = if (edge.is_end) offset else self.calc_new_offset(edge.sec_idx, size);
         const first_adjust = if (edge.is_end) size else if (new_offset < offset) size - (offset - new_offset) else size + (new_offset - offset);
         var needed_size = first_adjust;
@@ -171,12 +176,11 @@ pub const CoffModder: type = struct {
         while (off_idx < self.sechdrs_off_order.len) : (off_idx += 1) {
             const sec_idx = self.sechdrs_off_order[off_idx];
             const prev_off_sec_idx = self.sechdrs_off_order[off_idx - 1];
-            const existing_gap = pointers_to_raw_data[sec_idx] - (pointers_to_raw_data[prev_off_sec_idx] + sizes_of_raw_data[prev_off_sec_idx]);
+            // TODO: should consider calculating the padding and treating it as overwritable.
+            const existing_gap = sechdrs[sec_idx].pointer_to_raw_data - (sechdrs[prev_off_sec_idx].pointer_to_raw_data + sechdrs[prev_off_sec_idx].size_of_raw_data);
             if (needed_size < existing_gap) break;
             needed_size -= existing_gap;
-            if (self.sechdrs.get(sec_idx).getAlignment()) |alignment| {
-                if ((needed_size % alignment) != 0) needed_size += alignment - (needed_size % alignment);
-            }
+            if ((needed_size % file_alignment) != 0) needed_size += file_alignment - (needed_size % file_alignment);
             self.adjustments[off_idx - (self.sec_to_off[edge.sec_idx] + 1)] = needed_size;
         }
         var i = off_idx - (self.sec_to_off[edge.sec_idx] + 1);
@@ -184,17 +188,17 @@ pub const CoffModder: type = struct {
             i -= 1;
             const curr_off_idx = i + (self.sec_to_off[edge.sec_idx] + 1);
             const sec_idx = self.sechdrs_off_order[curr_off_idx];
-            try utils.shift_forward(self.parse_source, pointers_to_raw_data[sec_idx], pointers_to_raw_data[sec_idx] + sizes_of_raw_data[sec_idx], self.adjustments[i]);
-            try self.set_sechdr_field(sec_idx, pointers_to_raw_data[sec_idx] + self.adjustments[i], "pointer_to_raw_data");
+            try utils.shift_forward(self.parse_source, sechdrs[sec_idx].pointer_to_raw_data, sechdrs[sec_idx].pointer_to_raw_data + sechdrs[sec_idx].size_of_raw_data, self.adjustments[i]);
+            try self.set_sechdr_field(sec_idx, sechdrs[sec_idx].pointer_to_raw_data + self.adjustments[i], "pointer_to_raw_data");
         }
 
         if (!edge.is_end) {
-            try utils.shift_forward(self.parse_source, pointers_to_raw_data[edge.sec_idx], pointers_to_raw_data[edge.sec_idx] + sizes_of_raw_data[edge.sec_idx], new_offset + size - pointers_to_raw_data[edge.sec_idx]);
-            try self.set_sechdr_field(edge.sec_idx, virtual_addresses[edge.sec_idx] + self.adjustments[i], "virtual_address");
+            try utils.shift_forward(self.parse_source, sechdrs[edge.sec_idx].pointer_to_raw_data, sechdrs[edge.sec_idx].pointer_to_raw_data + sechdrs[edge.sec_idx].size_of_raw_data, new_offset + size - sechdrs[edge.sec_idx].pointer_to_raw_data);
+            try self.set_sechdr_field(edge.sec_idx, sechdrs[edge.sec_idx].virtual_address + self.adjustments[i], "virtual_address");
             try self.set_sechdr_field(edge.sec_idx, new_offset, "pointer_to_raw_data");
         }
-        try self.set_sechdr_field(edge.sec_idx, sizes_of_raw_data[edge.sec_idx] + size, "size_of_raw_data");
-        try self.set_sechdr_field(edge.sec_idx, virtual_sizes[edge.sec_idx] + size, "virtual_size");
+        try self.set_sechdr_field(edge.sec_idx, sechdrs[edge.sec_idx].size_of_raw_data + size, "size_of_raw_data");
+        try self.set_sechdr_field(edge.sec_idx, sechdrs[edge.sec_idx].virtual_size + size, "virtual_size");
         // TODO: adjust sections as well (and maybe debug info?)
     }
 
@@ -204,46 +208,51 @@ pub const CoffModder: type = struct {
     };
 
     fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-        return std.math.order(context.lhs, context.self.sechdrs.items(SectionHeaderFields.virtual_address)[context.self.sechdrs_vaddr_order[rhs]]);
+        return std.math.order(context.lhs, context.self.coff.getSectionHeaders()[context.self.sechdrs_addr_order[rhs]].virtual_address);
     }
 
     pub fn addr_to_off(self: *const Self, addr: u64) !u64 {
-        const pointers_to_raw_data = self.sechdrs.items(SectionHeaderFields.pointer_to_raw_data);
-        const virtual_addresses = self.sechdrs.items(SectionHeaderFields.virtual_address);
-        const sizes_of_raw_data = self.sechdrs.items(SectionHeaderFields.size_of_raw_data);
-        const virtual_sizes = self.sechdrs.items(SectionHeaderFields.virtual_size);
-        const containnig_idx = self.addr_to_idx(addr);
-        if (!(addr < (virtual_addresses[containnig_idx] + virtual_sizes[containnig_idx]))) return Error.AddrNotMapped;
-        const potenital_off = pointers_to_raw_data[containnig_idx] + addr - virtual_addresses[containnig_idx];
-        if (!(potenital_off < (pointers_to_raw_data[containnig_idx] + sizes_of_raw_data[containnig_idx]))) return Error.NoMatchingOffset;
+        const sechdrs = self.coff.getSectionHeaders();
+        const image_base = self.coff.getImageBase();
+        const normalized_addr = if (addr < image_base) return Error.AddrNotMapped else addr - image_base;
+        const containnig_idx = self.addr_to_idx(normalized_addr);
+        if (!(normalized_addr < (sechdrs[containnig_idx].virtual_address + sechdrs[containnig_idx].virtual_address))) return Error.AddrNotMapped;
+        const potenital_off = sechdrs[containnig_idx].pointer_to_raw_data + normalized_addr - sechdrs[containnig_idx].virtual_address;
+        if (!(potenital_off < (sechdrs[containnig_idx].pointer_to_raw_data + sechdrs[containnig_idx].size_of_raw_data))) return Error.NoMatchingOffset;
         return potenital_off;
     }
 
-    pub fn addr_to_idx(self: *const Self, addr: u64) usize {
-        return self.sechdrs_vaddr_order[std.sort.lowerBound(usize, self.sechdrs_vaddr_order, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1];
+    fn addr_to_idx(self: *const Self, addr: u64) usize {
+        return self.sechdrs_addr_order[std.sort.lowerBound(usize, self.sechdrs_addr_order, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1];
     }
 
     fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-        return std.math.order(context.lhs, context.self.sechdrs.items(SectionHeaderFields.pointer_to_raw_data)[context.self.sechdrs_off_order[rhs]]);
+        return std.math.order(context.lhs, context.self.coff.getSectionHeaders()[context.self.sechdrs_off_order[rhs]].pointer_to_raw_data);
     }
 
     pub fn off_to_addr(self: *const Self, off: u64) !u64 {
-        const pointers_to_raw_data = self.sechdrs.items(SectionHeaderFields.pointer_to_raw_data);
-        const virtual_addresses = self.sechdrs.items(SectionHeaderFields.virtual_address);
-        const sizes_of_raw_data = self.sechdrs.items(SectionHeaderFields.size_of_raw_data);
-        const virtual_sizes = self.sechdrs.items(SectionHeaderFields.virtual_size);
+        const sechdrs = self.coff.getSectionHeaders();
         const containnig_idx = self.off_to_idx(off);
-        if (!(off < (pointers_to_raw_data[containnig_idx] + sizes_of_raw_data[containnig_idx]))) return Error.OffsetNotLoaded;
-        std.debug.assert(virtual_sizes[containnig_idx] >= sizes_of_raw_data[containnig_idx]);
-        return virtual_addresses[containnig_idx] + off - pointers_to_raw_data[containnig_idx];
+        if (!(off < (sechdrs[containnig_idx].pointer_to_raw_data + sechdrs[containnig_idx].size_of_raw_data))) return Error.OffsetNotLoaded;
+        std.debug.print("containnig_idx = {}\n", .{containnig_idx});
+        std.debug.print("virtual_size = {x}, size_of_raw_data = {x}\n", .{ sechdrs[containnig_idx].virtual_size, sechdrs[containnig_idx].size_of_raw_data });
+        const hdr = self.coff.getOptionalHeader();
+        const file_alignment = switch (hdr.magic) {
+            std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => self.coff.getOptionalHeader32().file_alignment,
+            std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => self.coff.getOptionalHeader64().file_alignment,
+            else => unreachable, // We assume we have validated the header already
+        };
+
+        std.debug.assert((sechdrs[containnig_idx].virtual_size >= sechdrs[containnig_idx].size_of_raw_data) or ((sechdrs[containnig_idx].size_of_raw_data - sechdrs[containnig_idx].virtual_size) < file_alignment));
+        return self.coff.getImageBase() + sechdrs[containnig_idx].virtual_address + off - sechdrs[containnig_idx].pointer_to_raw_data;
     }
 
-    pub fn off_to_idx(self: *const Self, off: u64) usize {
+    fn off_to_idx(self: *const Self, off: u64) usize {
         return self.sechdrs_off_order[std.sort.lowerBound(usize, self.sechdrs_off_order, CompareContext{ .self = self, .lhs = off + 1 }, off_compareFn) - 1];
     }
 
     pub fn cave_to_off(self: Self, cave: SecEdge) u64 {
-        return self.sechdrs.items(SectionHeaderFields.pointer_to_raw_data)[cave.sec_idx] + if (cave.is_end) self.sechdrs.items(SectionHeaderFields.size_of_raw_data)[cave.sec_idx] else 0;
+        return self.coff.getSectionHeaders()[cave.sec_idx].pointer_to_raw_data + if (cave.is_end) self.coff.getSectionHeaders()[cave.sec_idx].size_of_raw_data else 0;
     }
 };
 

@@ -1,9 +1,12 @@
 const std = @import("std");
-const patch = @import("patch.zig");
+
 const arch = @import("arch.zig");
+const patch = @import("patch.zig");
+const modelf = @import("modelf.zig");
+const modcoff = @import("modcoff.zig");
 
 fn arg_err(out: std.io.AnyWriter) !void {
-    try out.print("MKPatch <file-to-patch> <patch-addr> <patch>", .{});
+    try out.print("binmodify <file-to-patch> <patch-addr> <patch>", .{});
 }
 
 fn find_cave_err(out: std.io.AnyWriter) !void {
@@ -30,10 +33,19 @@ pub fn main() !void {
     var f = try std.fs.cwd().openFile(to_patch, .{ .mode = .read_write });
     defer f.close();
     var stream = std.io.StreamSource{ .file = f };
-
-    var patcher: patch.Patcher = try patch.Patcher.init(alloc, &stream, patch.FileType.Elf, arch.Arch.X86, arch.Mode.MODE_64, null);
-    defer patcher.deinit(alloc) catch |err| std.debug.panic("Patcher deinit failed {}", .{err});
-    std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
-    try patcher.pure_patch(patch_addr, wanted_patch);
-    std.debug.print("Patch done\n", .{});
+    var header: [4]u8 = undefined;
+    const len = try stream.read(&header);
+    if (std.mem.eql(u8, header[0..len], &[_]u8{ 0x7F, 'E', 'L', 'F' })) {
+        var patcher: patch.Patcher(modelf.ElfModder) = try patch.Patcher(modelf.ElfModder).init(alloc, &stream, arch.Arch.X86, arch.Mode.MODE_64, null);
+        defer patcher.deinit(alloc) catch |err| std.debug.panic("Patcher deinit failed {}", .{err});
+        std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
+        try patcher.pure_patch(patch_addr, wanted_patch);
+        std.debug.print("Patch done\n", .{});
+    } else if (std.mem.eql(u8, header[0..len][0..2], &[_]u8{ 'M', 'Z' })) {
+        var patcher: patch.Patcher(modcoff.CoffModder) = try patch.Patcher(modcoff.CoffModder).init(alloc, &stream, arch.Arch.X86, arch.Mode.MODE_64, null);
+        defer patcher.deinit(alloc) catch |err| std.debug.panic("Patcher deinit failed {}", .{err});
+        std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
+        try patcher.pure_patch(patch_addr, wanted_patch);
+        std.debug.print("Patch done\n", .{});
+    }
 }

@@ -198,7 +198,7 @@ test "coff nop patch no difference" {
         const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
         var patcher: Patcher(modcoff.CoffModder) = try Patcher(modcoff.CoffModder).init(std.testing.allocator, &stream, arch.Arch.X86, arch.Mode.MODE_64, null);
         defer patcher.deinit(std.testing.allocator) catch |err| std.debug.panic("Patcher deinit failed {}", .{err});
-        try patcher.pure_patch(0x1001B3C, &patch);
+        try patcher.pure_patch(0x140001F88, &patch);
     }
 
     // check output with a cave
