@@ -5,7 +5,7 @@ const elf = std.elf;
 
 const p_flags_type = std.meta.fieldInfo(elf.Elf64_Phdr, @field(Phdr64Fields, "p_flags")).type;
 
-pub const PFlags: type = packed struct(p_flags_type) {
+const PFlags: type = packed struct(p_flags_type) {
     PF_X: bool = false,
     PF_W: bool = false,
     PF_R: bool = false,
@@ -20,7 +20,7 @@ pub const PFlags: type = packed struct(p_flags_type) {
     }
 };
 
-pub const ElfError = error{
+const ElfError = error{
     InvalidElfMagic,
     InvalidElfVersion,
     InvalidElfEndian,
@@ -43,14 +43,14 @@ pub const SegEdge: type = struct {
     is_end: bool,
 };
 
-pub const Phdr64Fields = std.meta.FieldEnum(elf.Elf64_Phdr);
-pub const Phdr32Fields = std.meta.FieldEnum(elf.Elf32_Phdr);
+const Phdr64Fields = std.meta.FieldEnum(elf.Elf64_Phdr);
+const Phdr32Fields = std.meta.FieldEnum(elf.Elf32_Phdr);
 
-pub const Shdr64Fields = std.meta.FieldEnum(elf.Elf64_Shdr);
-pub const Shdr32Fields = std.meta.FieldEnum(elf.Elf32_Shdr);
+const Shdr64Fields = std.meta.FieldEnum(elf.Elf64_Shdr);
+const Shdr32Fields = std.meta.FieldEnum(elf.Elf32_Shdr);
 
-pub const Ehdr64Fields = std.meta.FieldEnum(elf.Elf64_Ehdr);
-pub const Ehdr32Fields = std.meta.FieldEnum(elf.Elf32_Ehdr);
+const Ehdr64Fields = std.meta.FieldEnum(elf.Elf64_Ehdr);
+const Ehdr32Fields = std.meta.FieldEnum(elf.Elf32_Ehdr);
 
 fn off_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usize) bool {
     const offs = ranges.items(FileRangeFields.off);
@@ -70,22 +70,16 @@ fn sec_offset_lessThanFn(shdrs: *std.MultiArrayList(elf.Elf64_Shdr), lhs: usize,
     return (shdrs.items(Shdr64Fields.sh_offset)[lhs] < shdrs.items(Shdr64Fields.sh_offset)[rhs]);
 }
 
-pub const FileRangeFlags: type = packed struct {
-    read: bool = false,
-    write: bool = false,
-    execute: bool = false,
-};
-
 const FileRange: type = struct {
     off: u64,
     filesz: u64,
     addr: u64,
     memsz: u64,
     alignment: u64,
-    flags: FileRangeFlags,
+    flags: utils.FileRangeFlags,
 };
 
-pub const FileRangeFields = std.meta.FieldEnum(FileRange);
+const FileRangeFields = std.meta.FieldEnum(FileRange);
 
 pub const ElfModder: type = struct {
     header: elf.Header,
@@ -117,7 +111,7 @@ pub const ElfModder: type = struct {
                 .addr = phdr.p_vaddr,
                 .memsz = phdr.p_memsz,
                 .alignment = phdr.p_align,
-                .flags = FileRangeFlags{
+                .flags = utils.FileRangeFlags{
                     .read = flags.PF_R,
                     .write = flags.PF_W,
                     .execute = flags.PF_X,
@@ -133,7 +127,7 @@ pub const ElfModder: type = struct {
                 .addr = shdr.sh_addr,
                 .memsz = shdr.sh_size,
                 .alignment = shdr.sh_addralign,
-                .flags = FileRangeFlags{},
+                .flags = utils.FileRangeFlags{},
             });
         }
         // NOTE: we create an explict file range for the section header table to ensure that it wont be overriden.
@@ -143,7 +137,7 @@ pub const ElfModder: type = struct {
             .addr = 0,
             .memsz = 0,
             .alignment = 0,
-            .flags = FileRangeFlags{},
+            .flags = utils.FileRangeFlags{},
         });
         var off_sort = try gpa.alloc(usize, ranges.len);
         errdefer gpa.free(off_sort[0..ranges.len]);
@@ -260,7 +254,7 @@ pub const ElfModder: type = struct {
     }
 
     // Get an identifier for the location within the file where additional data could be inserted.
-    pub fn get_cave_option(self: *const Self, wanted_size: u64, flags: FileRangeFlags) Error!?SegEdge {
+    pub fn get_cave_option(self: *const Self, wanted_size: u64, flags: utils.FileRangeFlags) Error!?SegEdge {
         const flagss = self.ranges.items(FileRangeFields.flags);
         const addrs = self.ranges.items(FileRangeFields.addr);
         const memszs = self.ranges.items(FileRangeFields.memsz);
@@ -502,7 +496,7 @@ pub const ElfModder: type = struct {
         return potenital_off;
     }
 
-    pub fn addr_to_idx(self: *const Self, addr: u64) usize {
+    fn addr_to_idx(self: *const Self, addr: u64) usize {
         return self.addr_sort[self.top_addrs[std.sort.lowerBound(usize, self.top_addrs, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1]];
     }
 
@@ -522,7 +516,12 @@ pub const ElfModder: type = struct {
         return addrs[containnig_idx] + off - offs[containnig_idx];
     }
 
-    pub fn off_to_top_idx(self: *const Self, off: u64) usize {
+    pub fn cave_to_off(self: Self, cave: SegEdge) u64 {
+        const idx = self.off_sort[self.top_offs[cave.top_idx]];
+        return self.ranges.items(FileRangeFields.off)[idx] + if (cave.is_end) self.ranges.items(FileRangeFields.off)[idx] else 0;
+    }
+
+    fn off_to_top_idx(self: *const Self, off: u64) usize {
         return std.sort.lowerBound(usize, self.top_offs, CompareContext{ .self = self, .lhs = off + 1 }, off_compareFn) - 1;
     }
 };
@@ -551,7 +550,7 @@ test "create cave same output" {
         const wanted_size = 0xfff;
         var elf_modder: ElfModder = try ElfModder.init(std.testing.allocator, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        const option = (try elf_modder.get_cave_option(wanted_size, FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
+        const option = (try elf_modder.get_cave_option(wanted_size, utils.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
         try elf_modder.create_cave(wanted_size, option);
     }
 

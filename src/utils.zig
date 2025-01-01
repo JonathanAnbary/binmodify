@@ -60,3 +60,10 @@ test "test shift stream" {
     try shift_forward(&stream2, start2, end2, shift2);
     try std.testing.expectEqualStrings(&expected2, &buf2);
 }
+
+// The permissions that exist on a range of data in a file.
+pub const FileRangeFlags: type = packed struct {
+    read: bool = false,
+    write: bool = false,
+    execute: bool = false,
+};

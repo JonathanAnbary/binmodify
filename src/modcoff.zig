@@ -17,7 +17,8 @@ pub const Error = error{
     AddrNotMapped,
     NoMatchingOffset,
     OffsetNotLoaded,
-};
+    NoCaveOption,
+} || std.coff.CoffError;
 
 pub const SecEdge: type = struct {
     sec_idx: usize,
@@ -93,15 +94,16 @@ pub const CoffModder: type = struct {
 
     // Get an identifier for the location within the file where additional data could be inserted.
     // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
-    pub fn get_cave_option(self: *const Self, wanted_size: u64, flags: std.coff.SectionHeaderFlags) !?SecEdge {
+    pub fn get_cave_option(self: *const Self, wanted_size: u64, flags: utils.FileRangeFlags) !?SecEdge {
         const flagss = self.sechdrs.items(SectionHeaderFields.flags);
         const virtual_addresses = self.sechdrs.items(SectionHeaderFields.virtual_address);
         const virtual_sizes = self.sechdrs.items(SectionHeaderFields.virtual_size);
+        const sec_flags = std.coff.SectionHeaderFlags{ .MEM_READ = @intFromBool(flags.read), .MEM_WRITE = @intFromBool(flags.write), .MEM_EXECUTE = @intFromBool(flags.execute) };
         var i = self.sechdrs_off_order.len;
         while (i > 0) {
             i -= 1;
             const sec_idx = self.sechdrs_off_order[i];
-            if (flagss[sec_idx] != flags) continue;
+            if (flagss[sec_idx] != sec_flags) continue;
             // NOTE: this assumes you dont have an upper bound on possible memory address.
             if ((self.sec_to_vaddr[sec_idx] == (self.sechdrs.len - 1)) or
                 ((virtual_addresses[sec_idx] + virtual_sizes[sec_idx] + wanted_size) < virtual_addresses[self.sec_to_vaddr[sec_idx] + 1])) return SecEdge{
@@ -237,7 +239,11 @@ pub const CoffModder: type = struct {
     }
 
     pub fn off_to_idx(self: *const Self, off: u64) usize {
-        return self.sechdrs_off_order[std.sort.lowerBound(usize, self.sechdrs_off_order, CompareContext{ .self = self, .lsh = off + 1 }, off_compareFn) - 1];
+        return self.sechdrs_off_order[std.sort.lowerBound(usize, self.sechdrs_off_order, CompareContext{ .self = self, .lhs = off + 1 }, off_compareFn) - 1];
+    }
+
+    pub fn cave_to_off(self: Self, cave: SecEdge) u64 {
+        return self.sechdrs.items(SectionHeaderFields.pointer_to_raw_data)[cave.sec_idx] + if (cave.is_end) self.sechdrs.items(SectionHeaderFields.size_of_raw_data)[cave.sec_idx] else 0;
     }
 };
 
@@ -266,7 +272,7 @@ test "create_cave same output" {
         const wanted_size = 0x1000;
         var coff_modder: CoffModder = try CoffModder.init(std.testing.allocator, &stream);
         defer coff_modder.deinit(std.testing.allocator);
-        const option = (try coff_modder.get_cave_option(wanted_size, std.coff.SectionHeaderFlags{ .MEM_READ = 1, .MEM_EXECUTE = 1 })).?;
+        const option = (try coff_modder.get_cave_option(wanted_size, utils.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
         try coff_modder.create_cave(wanted_size, option);
     }
 
