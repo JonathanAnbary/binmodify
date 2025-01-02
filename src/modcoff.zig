@@ -88,15 +88,11 @@ pub const CoffModder: type = struct {
     pub fn get_cave_option(self: *const Self, wanted_size: u64, flags: utils.FileRangeFlags) !?SecEdge {
         const sechdrs = self.coff.getSectionHeaders();
         var i = self.sechdrs_off_order.len;
-        std.debug.print("\nlooking for flags {}\n", .{flags});
         while (i > 0) {
             i -= 1;
             const sec_idx = self.sechdrs_off_order[i];
             const sec_flags = utils.FileRangeFlags{ .read = sechdrs[sec_idx].flags.MEM_READ == 1, .write = sechdrs[sec_idx].flags.MEM_WRITE == 1, .execute = sechdrs[sec_idx].flags.MEM_EXECUTE == 1 };
-            std.debug.print("sec_idx {} has flags {}\n", .{ sec_idx, sec_flags });
             if (sec_flags != flags) continue;
-            std.debug.print("sec_end_addr = {x}\n", .{sechdrs[sec_idx].virtual_address + sechdrs[sec_idx].virtual_size + wanted_size});
-            std.debug.print("next sec start = {x}\n", .{if (self.sec_to_addr[sec_idx] == (sechdrs.len - 1)) std.math.maxInt(u64) else @as(usize, @intCast(sechdrs[self.sec_to_addr[sec_idx] + 1].virtual_address))});
             // NOTE: this assumes you dont have an upper bound on possible memory address.
             if ((self.sec_to_addr[sec_idx] == (sechdrs.len - 1)) or
                 ((sechdrs[sec_idx].virtual_address + sechdrs[sec_idx].virtual_size + wanted_size) < sechdrs[self.sec_to_addr[sec_idx] + 1].virtual_address)) return SecEdge{
@@ -104,9 +100,7 @@ pub const CoffModder: type = struct {
                 .is_end = true,
             };
             // NOTE: not doing start caves since I am not sure how to resolve the alignment requirements of section start address.
-            // std.debug.print("sec_start_addr = {x}\n", .{sechdrs[sec_idx].virtual_address});
             // const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
-            // std.debug.print("prev sec end = {x}\n", .{prev_sec_mem_bound});
             // if (sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
             //     .sec_idx = sec_idx,
             //     .is_end = false,
@@ -143,8 +137,6 @@ pub const CoffModder: type = struct {
     // NOTE: field changes must NOT change the memory order or offset order!
     // TODO: consider what to do when setting the segment which holds the phdrtable itself.
     fn set_sechdr_field(self: *Self, index: usize, val: u64, comptime field_name: []const u8) !void {
-        const sechdrs = self.coff.getSectionHeaders();
-        std.debug.print("setting {s}[{}] from {x} to {x}\n", .{ field_name, index, @field(sechdrs[index], field_name), val });
         const coff_header = self.coff.getCoffHeader();
         const offset = self.coff.coff_header_offset + @sizeOf(std.coff.CoffHeader) + coff_header.size_of_optional_header;
         try self.parse_source.seekTo(offset + @sizeOf(std.coff.SectionHeader) * index);
@@ -234,8 +226,6 @@ pub const CoffModder: type = struct {
         const sechdrs = self.coff.getSectionHeaders();
         const containnig_idx = self.off_to_idx(off);
         if (!(off < (sechdrs[containnig_idx].pointer_to_raw_data + sechdrs[containnig_idx].size_of_raw_data))) return Error.OffsetNotLoaded;
-        std.debug.print("containnig_idx = {}\n", .{containnig_idx});
-        std.debug.print("virtual_size = {x}, size_of_raw_data = {x}\n", .{ sechdrs[containnig_idx].virtual_size, sechdrs[containnig_idx].size_of_raw_data });
         const hdr = self.coff.getOptionalHeader();
         const file_alignment = switch (hdr.magic) {
             std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => self.coff.getOptionalHeader32().file_alignment,

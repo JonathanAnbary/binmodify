@@ -26,7 +26,7 @@ const CSError = error{
     UNKNOWN,
 };
 
-fn to_zig_err(err: capstone.cs_err) CSError!void {
+fn from_capstone_err(err: capstone.cs_err) CSError!void {
     return switch (err) {
         capstone.CS_ERR_OK => return,
         capstone.CS_ERR_MEM => CSError.CS_ERR_MEM,
@@ -90,7 +90,7 @@ pub fn Patcher(ModderT: type) type {
                 .ctl_assembler = try ctl_asm.CtlFlowAssembler.init(farch, fmode, fendian),
                 .csh = blk: {
                     var handle: capstone.csh = undefined;
-                    try to_zig_err(capstone.cs_open(arch.to_cs_arch(farch), try arch.to_cs_mode(farch, fmode, fendian), @ptrCast(&handle)));
+                    try from_capstone_err(capstone.cs_open(arch.to_cs_arch(farch), try arch.to_cs_mode(farch, fmode, fendian), @ptrCast(&handle)));
                     break :blk handle;
                 },
                 .fmode = fmode,
@@ -100,7 +100,7 @@ pub fn Patcher(ModderT: type) type {
 
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) !void {
             self.modder.deinit(gpa);
-            try to_zig_err(capstone.cs_close(&self.csh));
+            try from_capstone_err(capstone.cs_close(&self.csh));
         }
 
         pub fn pure_patch(self: *Self, addr: u64, patch: []const u8) !void {
