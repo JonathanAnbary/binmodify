@@ -251,8 +251,8 @@ pub const CoffModder: type = struct {
         return self.sechdrs_off_order[std.sort.lowerBound(usize, self.sechdrs_off_order, CompareContext{ .self = self, .lhs = off + 1 }, off_compareFn) - 1];
     }
 
-    pub fn cave_to_off(self: Self, cave: SecEdge) u64 {
-        return self.coff.getSectionHeaders()[cave.sec_idx].pointer_to_raw_data + if (cave.is_end) self.coff.getSectionHeaders()[cave.sec_idx].size_of_raw_data else 0;
+    pub fn cave_to_off(self: Self, cave: SecEdge, size: u64) u64 {
+        return self.coff.getSectionHeaders()[cave.sec_idx].pointer_to_raw_data + if (cave.is_end) self.coff.getSectionHeaders()[cave.sec_idx].size_of_raw_data - size else 0;
     }
 };
 

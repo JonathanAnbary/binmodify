@@ -117,7 +117,7 @@ pub fn Patcher(ModderT: type) type {
             try self.modder.create_cave(cave_size, cave_option);
             const off_after_patch = try self.modder.addr_to_off(addr);
             // TODO: mismatch between filesz and memsz is gonna screw me over.
-            const cave_off = self.modder.cave_to_off(cave_option);
+            const cave_off = self.modder.cave_to_off(cave_option, cave_size);
             const cave_addr = try self.modder.off_to_addr(cave_off);
             try self.stream.seekTo(cave_off);
             std.debug.assert(try self.stream.write(patch) == patch.len);

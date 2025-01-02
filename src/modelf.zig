@@ -516,9 +516,9 @@ pub const ElfModder: type = struct {
         return addrs[containnig_idx] + off - offs[containnig_idx];
     }
 
-    pub fn cave_to_off(self: Self, cave: SegEdge) u64 {
+    pub fn cave_to_off(self: Self, cave: SegEdge, size: u64) u64 {
         const idx = self.off_sort[self.top_offs[cave.top_idx]];
-        return self.ranges.items(FileRangeFields.off)[idx] + if (cave.is_end) self.ranges.items(FileRangeFields.filesz)[idx] else 0;
+        return self.ranges.items(FileRangeFields.off)[idx] + if (cave.is_end) self.ranges.items(FileRangeFields.filesz)[idx] - size else 0;
     }
 
     fn off_to_top_idx(self: *const Self, off: u64) usize {
