@@ -2,9 +2,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const arch = @import("arch.zig");
-const elf = @import("modder/elf.zig");
-const coff = @import("modder/coff.zig");
-const common = @import("modder/common.zig");
+const ElfModder = @import("elf/Modder.zig");
+const ElfParsed = @import("elf/Parsed.zig");
+const CoffModder = @import("coff/Modder.zig");
+const CoffParsed = @import("coff/Parsed.zig");
+const common = @import("common.zig");
 const ctl_asm = @import("ctl_asm.zig");
 
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
@@ -48,7 +50,7 @@ fn from_capstone_err(err: capstone.cs_err) CSError!void {
     };
 }
 
-pub const Error = coff.Error || elf.Error || CSError || arch.Error;
+pub const Error = CoffModder.Error || ElfModder.Error || CSError || arch.Error;
 
 fn min_insn_size(handle: capstone.csh, size: u64, code: []const u8) u64 {
     const insn = capstone.cs_malloc(handle);
@@ -75,10 +77,10 @@ pub fn Patcher(T: type) type {
         ) Error!Self {
             var modder: T = try T.init(gpa, parsed, stream);
             errdefer modder.deinit(gpa);
-            const farch = try if (@TypeOf(parsed) == *const std.elf.Header) arch.elf_get_arch(parsed) else if (@TypeOf(parsed) == *const std.coff.Coff) arch.coff_get_arch(&parsed.getCoffHeader()) else @compileError("parsed source not yet abstracted over");
+            const farch = try parsed.get_arch();
             // NOTE: mode might be something that is not contant across the file.
-            const fmode = try if (@TypeOf(parsed) == *const std.elf.Header) arch.elf_get_mode(parsed) else if (@TypeOf(parsed) == *const std.coff.Coff) arch.coff_get_mode(parsed) else @compileError("parsed source not yet abstracted over");
-            const fendian = if (@TypeOf(parsed) == *const std.elf.Header) parsed.endian else if (@TypeOf(parsed) == *const std.coff.Coff) try arch.coff_get_endian(&parsed.getCoffHeader()) else @compileError("parsed source not yet abstracted over");
+            const fmode = try parsed.get_mode();
+            const fendian = try parsed.get_endian();
 
             return Self{
                 .modder = modder,
@@ -161,8 +163,8 @@ test "elf nop patch no difference" {
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
-        const header = try std.elf.Header.read(&stream);
-        var patcher: Patcher(elf.Modder) = try Patcher(elf.Modder).init(std.testing.allocator, &stream, &header);
+        const parsed = try ElfParsed.init(&stream);
+        var patcher: Patcher(ElfModder) = try Patcher(ElfModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
         try patcher.pure_patch(0x1001B3C, &patch, &stream);
     }
@@ -213,8 +215,9 @@ test "coff nop patch no difference" {
         const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
         defer std.testing.allocator.free(data);
-        const coff_header = try std.coff.Coff.init(data, false);
-        var patcher: Patcher(coff.Modder) = try Patcher(coff.Modder).init(std.testing.allocator, &stream, coff_header);
+        const coff = try std.coff.Coff.init(data, false);
+        const parsed = CoffParsed.init(coff);
+        var patcher: Patcher(CoffModder) = try Patcher(CoffModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
         try patcher.pure_patch(0x140001F88, &patch, &stream);
     }
@@ -304,8 +307,8 @@ test "elf fizzbuzz fizz always" {
         const overwrite = [_]u8{0x83}; // changing je to jae
         try std.testing.expectEqual(overwrite.len, try stream.write(&overwrite));
         const patch = [_]u8{ 0xFE, 0xC3 } ** 0x2; // inc bl; inc bl;
-        const header = try std.elf.Header.read(&stream);
-        var patcher: Patcher(elf.Modder) = try Patcher(elf.Modder).init(std.testing.allocator, &stream, &header);
+        const parsed = try ElfParsed.init(&stream);
+        var patcher: Patcher(ElfModder) = try Patcher(ElfModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
         try patcher.pure_patch(0x1001E14, &patch, &stream);
     }

@@ -2,9 +2,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const patch = @import("patch.zig");
-pub const elf = @import("modder/elf.zig");
-pub const coff = @import("modder/coff.zig");
-pub const common = @import("modder/common.zig");
+pub const ElfModder = @import("elf/Modder.zig");
+pub const ElfParsed = @import("elf/Parsed.zig");
+pub const CoffModder = @import("coff/Modder.zig");
+pub const CoffParsed = @import("coff/Parsed.zig");
+// pub const common = @import("modder/common.zig");
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const alloc = gpa.allocator();
@@ -149,42 +151,43 @@ pub fn err_to_res(e: patch.Error) Result {
     };
 }
 
-fn inner_ElfPatcher_init(out: *patch.Patcher(elf.Modder), stream: *std.io.StreamSource) !void {
-    const header = try std.elf.Header.read(stream);
-    out.* = try patch.Patcher(elf.Modder).init(alloc, stream, &header);
+fn inner_ElfPatcher_init(out: *patch.Patcher(ElfModder), stream: *std.io.StreamSource) !void {
+    const parsed = try ElfParsed.init(stream);
+    out.* = try patch.Patcher(ElfModder).init(alloc, stream, &parsed);
 }
 
-pub export fn ElfPatcher_init(out: *patch.Patcher(elf.Modder), stream: *std.io.StreamSource) Result {
+pub export fn ElfPatcher_init(out: *patch.Patcher(ElfModder), stream: *std.io.StreamSource) Result {
     inner_ElfPatcher_init(out, stream) catch |err| return err_to_res(err);
     return .Ok;
 }
 
-pub export fn ElfPatcher_deinit(patcher: *patch.Patcher(elf.Modder)) void {
+pub export fn ElfPatcher_deinit(patcher: *patch.Patcher(ElfModder)) void {
     patcher.deinit(alloc);
 }
 
-pub export fn ElfPatcher_pure_patch(patcher: *patch.Patcher(elf.Modder), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource) Result {
+pub export fn ElfPatcher_pure_patch(patcher: *patch.Patcher(ElfModder), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource) Result {
     patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
     return .Ok;
 }
 
-fn inner_CoffPatcher_init(out: *patch.Patcher(coff.Modder), stream: *std.io.StreamSource) !void {
+fn inner_CoffPatcher_init(out: *patch.Patcher(CoffModder), stream: *std.io.StreamSource) !void {
     const data = try alloc.alloc(u8, try stream.getEndPos());
     defer alloc.free(data);
-    const coff_header = try std.coff.Coff.init(data, false);
-    out.* = try patch.Patcher(coff.Modder).init(alloc, stream, &coff_header);
+    const coff = try std.coff.Coff.init(data, false);
+    const parsed = CoffParsed.init(coff);
+    out.* = try patch.Patcher(CoffModder).init(alloc, stream, &parsed);
 }
 
-pub export fn CoffPatcher_init(out: *patch.Patcher(coff.Modder), stream: *std.io.StreamSource) Result {
+pub export fn CoffPatcher_init(out: *patch.Patcher(CoffModder), stream: *std.io.StreamSource) Result {
     inner_CoffPatcher_init(out, stream) catch |err| return err_to_res(err);
     return .Ok;
 }
 
-pub export fn CoffPatcher_deinit(patcher: *patch.Patcher(coff.Modder)) void {
+pub export fn CoffPatcher_deinit(patcher: *patch.Patcher(CoffModder)) void {
     patcher.deinit(alloc);
 }
 
-pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(coff.Modder), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource) Result {
+pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(CoffModder), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource) Result {
     patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
     return .Ok;
 }
@@ -221,7 +224,7 @@ test "c patcher api elf" {
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const patch_data: [*:0]const u8 = @ptrCast(&([_]u8{0x90} ** 0x900 ++ [_]u8{0x00})); // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
-        var patcher: patch.Patcher(elf.Modder) = undefined;
+        var patcher: patch.Patcher(ElfModder) = undefined;
         const res = ElfPatcher_init(&patcher, &stream);
         try std.testing.expectEqual(.Ok, res);
         defer ElfPatcher_deinit(&patcher);
