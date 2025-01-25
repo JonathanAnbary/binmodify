@@ -24,6 +24,9 @@ pub const Error = error{
     OffsetNotLoaded,
     NoCaveOption,
     InvalidOptionalHeaderMagic,
+    IntersectingFileRanges,
+    UnexpectedEof,
+    VirtualSizeLessThenFileSize,
 } || coff.CoffError;
 
 pub const SecEdge: type = struct {
@@ -128,13 +131,13 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.File
     return null;
 }
 
-fn calc_new_offset(self: *const Modder, index: usize, size: u64) u64 {
+fn calc_new_offset(self: *const Modder, index: usize, size: u64) !u64 {
     // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
     // and for the case of a start edge whith enough space from the previous segment offset.
     const align_offset = (self.sechdrs[index].pointer_to_raw_data + (self.header.file_alignment - (size % self.header.file_alignment))) % self.header.file_alignment;
     const temp = self.off_sort[self.sec_to_off[index] - 1];
     const prev_off_end = self.sechdrs[temp].pointer_to_raw_data + self.sechdrs[temp].size_of_raw_data;
-    std.debug.assert(prev_off_end <= self.sechdrs[index].pointer_to_raw_data);
+    if (prev_off_end > self.sechdrs[index].pointer_to_raw_data) return Error.IntersectingFileRanges;
     const new_offset = if (self.sechdrs[index].pointer_to_raw_data > (size + prev_off_end))
         (self.sechdrs[index].pointer_to_raw_data - size)
     else
@@ -154,13 +157,13 @@ fn set_sechdr_field(self: *Modder, index: usize, val: u64, comptime field_name: 
     const temp: T = @intCast(val);
     try parse_source.seekBy(@offsetOf(coff.SectionHeader, field_name));
     const temp2 = std.mem.toBytes(temp);
-    std.debug.assert(try parse_source.write(&temp2) == @sizeOf(T));
+    if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     @field(self.sechdrs[index], field_name) = @intCast(val);
 }
 
 pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytype) !void {
     const offset = self.sechdrs[edge.sec_idx].pointer_to_raw_data;
-    const new_offset: u64 = if (edge.is_end) offset else self.calc_new_offset(edge.sec_idx, size);
+    const new_offset: u64 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < offset) size - (offset - new_offset) else size + (new_offset - offset);
     var needed_size = first_adjust;
 
@@ -223,7 +226,7 @@ fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
 pub fn off_to_addr(self: *const Modder, off: u64) !u64 {
     const containnig_idx = self.off_to_idx(off);
     if (!(off < (self.sechdrs[containnig_idx].pointer_to_raw_data + self.sechdrs[containnig_idx].size_of_raw_data))) return Error.OffsetNotLoaded;
-    std.debug.assert((self.sechdrs[containnig_idx].virtual_size >= self.sechdrs[containnig_idx].size_of_raw_data) or ((self.sechdrs[containnig_idx].size_of_raw_data - self.sechdrs[containnig_idx].virtual_size) < self.header.file_alignment));
+    if ((self.sechdrs[containnig_idx].virtual_size < self.sechdrs[containnig_idx].size_of_raw_data) and ((self.sechdrs[containnig_idx].size_of_raw_data - self.sechdrs[containnig_idx].virtual_size) >= self.header.file_alignment)) return Error.VirtualSizeLessThenFileSize;
     return self.header.image_base + self.sechdrs[containnig_idx].virtual_address + off - self.sechdrs[containnig_idx].pointer_to_raw_data;
 }
 

@@ -50,7 +50,10 @@ fn from_capstone_err(err: capstone.cs_err) CSError!void {
     };
 }
 
-pub const Error = CoffModder.Error || ElfModder.Error || CSError || arch.Error;
+pub const Error = error{
+    IllogicalInsnToMove,
+    IllogicalJmpSize,
+} || CoffModder.Error || ElfModder.Error || CSError || arch.Error;
 
 fn min_insn_size(handle: capstone.csh, size: u64, code: []const u8) u64 {
     const insn = capstone.cs_malloc(handle);
@@ -108,7 +111,7 @@ pub fn Patcher(T: type) type {
             const ctl_trasnfer_size = (ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.ctl_assembler.arch) orelse return Error.ArchNotSupported).len;
             const insn_to_move_siz = min_insn_size(self.csh, ctl_trasnfer_size, buff[0..max]);
             const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
-            std.debug.assert(insn_to_move_siz < buff.len);
+            if (insn_to_move_siz >= buff.len) return Error.IllogicalInsnToMove;
             const cave_option = (try self.modder.get_cave_option(cave_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
             try self.modder.create_cave(cave_size, cave_option, stream);
             const off_after_patch = try self.modder.addr_to_off(addr);
@@ -116,17 +119,17 @@ pub fn Patcher(T: type) type {
             const cave_off = self.modder.cave_to_off(cave_option, cave_size);
             const cave_addr = try self.modder.off_to_addr(cave_off);
             try stream.seekTo(cave_off);
-            std.debug.assert(try stream.write(patch) == patch.len);
+            if (try stream.write(patch) != patch.len) return Error.UnexpectedEof;
             try stream.seekTo(cave_off + patch.len);
-            std.debug.assert(try stream.write(buff[0..insn_to_move_siz]) == insn_to_move_siz);
+            if (try stream.write(buff[0..insn_to_move_siz]) != insn_to_move_siz) return Error.UnexpectedEof;
             const patch_to_cave_size = try self.ctl_assembler.assemble_ctl_transfer(addr, cave_addr, &buff);
-            std.debug.assert(patch_to_cave_size == ctl_trasnfer_size);
+            if (patch_to_cave_size != ctl_trasnfer_size) return Error.IllogicalJmpSize;
             try stream.seekTo(off_after_patch);
-            std.debug.assert(try stream.write(buff[0..patch_to_cave_size]) == patch_to_cave_size);
+            if (try stream.write(buff[0..patch_to_cave_size]) != patch_to_cave_size) return Error.UnexpectedEof;
             const cave_to_patch_size = try self.ctl_assembler.assemble_ctl_transfer(cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
-            std.debug.assert(cave_to_patch_size == ctl_trasnfer_size);
+            if (cave_to_patch_size != ctl_trasnfer_size) return Error.IllogicalJmpSize;
             try stream.seekTo(cave_off + patch.len + insn_to_move_siz);
-            std.debug.assert(try stream.write(buff[0..cave_to_patch_size]) == cave_to_patch_size);
+            if (try stream.write(buff[0..cave_to_patch_size]) != cave_to_patch_size) return Error.UnexpectedEof;
         }
     };
 }

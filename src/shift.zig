@@ -1,10 +1,14 @@
 const std = @import("std");
 const StreamSource = std.io.StreamSource;
-const assert = std.debug.assert;
+
+pub const Error = error{
+    StartAfterEnd,
+    UnexpectedEof,
+};
 
 pub fn shift_forward(stream: anytype, start: u64, end: u64, amt: u64) !void {
     if ((start == end) or (amt == 0)) return;
-    assert(start < end);
+    if (start > end) return Error.StartAfterEnd;
     var buff: [1024]u8 = undefined;
     const shift_start: u64 = blk: {
         if (end < (start + amt)) {
@@ -19,25 +23,25 @@ pub fn shift_forward(stream: anytype, start: u64, end: u64, amt: u64) !void {
     var pos = shift_start;
     while ((pos + buff.len) < end) : (pos += buff.len) {
         try stream.seekTo(pos);
-        assert(try stream.read(&buff) == buff.len);
+        if (try stream.read(&buff) != buff.len) return Error.UnexpectedEof;
         try stream.seekTo(pos + amt);
-        assert(try stream.write(&buff) == buff.len);
+        if (try stream.write(&buff) != buff.len) return Error.UnexpectedEof;
     }
     try stream.seekTo(pos);
-    assert(try stream.read(buff[0 .. end - pos]) == end - pos);
+    if (try stream.read(buff[0 .. end - pos]) != end - pos) return Error.UnexpectedEof;
     try stream.seekTo(pos + amt);
-    assert(try stream.write(buff[0 .. end - pos]) == end - pos);
+    if (try stream.write(buff[0 .. end - pos]) != end - pos) return Error.UnexpectedEof;
     pos = shift_start;
     while (pos > (start + buff.len)) : (pos -= buff.len) {
         try stream.seekTo(pos - buff.len);
-        assert(try stream.read(&buff) == buff.len);
+        if (try stream.read(&buff) != buff.len) return Error.UnexpectedEof;
         try stream.seekTo(pos - buff.len + amt);
-        assert(try stream.write(&buff) == buff.len);
+        if (try stream.write(&buff) != buff.len) return Error.UnexpectedEof;
     }
     try stream.seekTo(start);
-    assert(try stream.read(buff[0 .. pos - start]) == pos - start);
+    if (try stream.read(buff[0 .. pos - start]) != pos - start) return Error.UnexpectedEof;
     try stream.seekTo(start + amt);
-    assert(try stream.write(buff[0 .. pos - start]) == pos - start);
+    if (try stream.write(buff[0 .. pos - start]) != pos - start) return Error.UnexpectedEof;
 }
 
 test "test shift stream" {

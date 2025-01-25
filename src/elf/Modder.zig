@@ -41,8 +41,13 @@ pub const Error = error{
     OffsetNotLoaded,
     AddrNotMapped,
     NoMatchingOffset,
-    OverlappingFileRanges,
-} || ElfError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError;
+    IntersectingFileRanges,
+    InvalidElfRanges,
+    IntersectingMemoryRanges,
+    UnexpectedEof,
+    CantExpandPhdr,
+    FileszBiggerThenMemsz,
+} || shift.Error || ElfError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError;
 
 pub const SegEdge: type = struct {
     top_idx: usize,
@@ -177,17 +182,16 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
     }
     const offs = ranges.items(FileRangeFields.off);
     const fileszs = ranges.items(FileRangeFields.filesz);
-    std.debug.assert(ranges.len != 0);
     var off_containing_index = off_sort[0];
     var off_containing_count: usize = 1;
-    std.debug.assert(offs[off_containing_index] == 0);
+    if (offs[off_containing_index] != 0) return Error.InvalidElfRanges;
     for (off_sort[1..]) |index| {
         const off = offs[index];
         if (off >= (offs[off_containing_index] + fileszs[off_containing_index])) {
             off_containing_index = index;
             off_containing_count += 1;
         } else {
-            if ((off + fileszs[index]) > (offs[off_containing_index] + fileszs[off_containing_index])) return Error.OverlappingFileRanges;
+            if ((off + fileszs[index]) > (offs[off_containing_index] + fileszs[off_containing_index])) return Error.IntersectingFileRanges;
         }
     }
     const top_offs = try gpa.alloc(usize, off_containing_count);
@@ -208,11 +212,11 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
     const memszs = ranges.items(FileRangeFields.memsz);
     var addr_containing_index = addr_sort[0];
     var addr_containing_count: usize = 1;
-    std.debug.assert(addrs[addr_containing_index] == 0);
+    if (addrs[addr_containing_index] != 0) return Error.InvalidElfRanges;
     for (addr_sort[1..]) |index| {
         const addr = addrs[index];
         if (addr < (addrs[addr_containing_index] + memszs[addr_containing_index])) {
-            std.debug.assert((addr + memszs[index]) <= (addrs[addr_containing_index] + memszs[addr_containing_index]));
+            if ((addr + memszs[index]) > (addrs[addr_containing_index] + memszs[addr_containing_index])) return Error.IntersectingMemoryRanges;
         } else {
             addr_containing_index = index;
             addr_containing_count += 1;
@@ -318,14 +322,14 @@ fn set_shdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
         try parse_source.seekBy(@offsetOf(elf.Elf64_Shdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        std.debug.assert(try parse_source.write(&temp2) == @sizeOf(T));
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     } else {
         const T = std.meta.fieldInfo(elf.Elf32_Shdr, @field(Shdr32Fields, field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
         try parse_source.seekBy(@offsetOf(elf.Elf32_Shdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        std.debug.assert(try parse_source.write(&temp2) == @sizeOf(T));
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     }
     // self.shdrs.items(@field(Shdr64Fields, field_name))[index] = @intCast(val);
 }
@@ -339,14 +343,14 @@ fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, pars
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
         try parse_source.seekBy(@offsetOf(elf.Elf64_Ehdr, native_field_name));
         const temp2 = std.mem.toBytes(temp);
-        std.debug.assert(try parse_source.write(&temp2) == @sizeOf(T));
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     } else {
         const T = std.meta.fieldInfo(elf.Elf32_Ehdr, @field(Ehdr32Fields, native_field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
         try parse_source.seekBy(@offsetOf(elf.Elf32_Ehdr, native_field_name));
         const temp2 = std.mem.toBytes(temp);
-        std.debug.assert(try parse_source.write(&temp2) == @sizeOf(T));
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     }
     @field(self.header, field_name) = @intCast(val);
 }
@@ -361,19 +365,19 @@ fn set_phdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
         try parse_source.seekBy(@offsetOf(elf.Elf64_Phdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        std.debug.assert(try parse_source.write(&temp2) == @sizeOf(T));
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     } else {
         const T = std.meta.fieldInfo(elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
         try parse_source.seekBy(@offsetOf(elf.Elf32_Phdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        std.debug.assert(try parse_source.write(&temp2) == @sizeOf(T));
+        if (try parse_source.write(&temp2) == @sizeOf(T)) return Error.UnexpectedEof;
     }
     // self.phdrs.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
 }
 
-fn calc_new_offset(self: *const Modder, top_idx: usize, size: u64) u64 {
+fn calc_new_offset(self: *const Modder, top_idx: usize, size: u64) !u64 {
     const aligns = self.ranges.items(FileRangeFields.alignment);
     const offs = self.ranges.items(FileRangeFields.off);
     const fileszs = self.ranges.items(FileRangeFields.filesz);
@@ -384,7 +388,7 @@ fn calc_new_offset(self: *const Modder, top_idx: usize, size: u64) u64 {
     const align_offset = (offs[index] + (aligns[index] - (size % aligns[index]))) % aligns[index];
     const temp = self.off_sort[self.top_offs[top_idx - 1]];
     const prev_off_end = offs[temp] + fileszs[temp];
-    std.debug.assert(prev_off_end <= offs[index]);
+    if (prev_off_end > offs[index]) return Error.IntersectingFileRanges;
     const new_offset = if (offs[index] > (size + prev_off_end))
         (offs[index] - size)
     else
@@ -398,7 +402,7 @@ fn calc_new_offset(self: *const Modder, top_idx: usize, size: u64) u64 {
 // TODO: consider what happens when the original filesz and memsz are unequal.
 pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytype) Error!void {
     // NOTE: moving around the pheader table sounds like a bad idea.
-    std.debug.assert(edge.top_idx != 0);
+    if (edge.top_idx == 0) return Error.CantExpandPhdr;
     const aligns = self.ranges.items(FileRangeFields.alignment);
     const offs = self.ranges.items(FileRangeFields.off);
     const addrs = self.ranges.items(FileRangeFields.addr);
@@ -408,7 +412,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
     // const shoff_top_idx = self.off_to_top_idx(self.header.shoff);
 
     const old_offset: u64 = offs[idx];
-    const new_offset: u64 = if (edge.is_end) old_offset else self.calc_new_offset(edge.top_idx, size);
+    const new_offset: u64 = if (edge.is_end) old_offset else try self.calc_new_offset(edge.top_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < old_offset) size - (old_offset - new_offset) else size + (new_offset - old_offset);
     var needed_size = first_adjust;
 
@@ -542,7 +546,7 @@ pub fn off_to_addr(self: *const Modder, off: u64) Error!u64 {
     const containnig_idx = self.off_sort[self.top_offs[self.off_to_top_idx(off)]];
     if (!(off < (offs[containnig_idx] + fileszs[containnig_idx]))) return Error.OffsetNotLoaded;
     // NOTE: cant think of a case where the memsz will be smaller then the filesz (of a top level segment?).
-    std.debug.assert(memszs[containnig_idx] >= fileszs[containnig_idx]);
+    if (memszs[containnig_idx] < fileszs[containnig_idx]) return Error.FileszBiggerThenMemsz;
     return addrs[containnig_idx] + off - offs[containnig_idx];
 }
 
@@ -687,7 +691,7 @@ test "corrupted elf (non containied overlapping ranges)" {
     const patch = std.mem.toBytes(@as(u64, 0xAF5));
     try std.testing.expectEqual(patch.len, try stream.write(&patch));
     const parsed = try Parsed.init(&stream);
-    try std.testing.expectError(Error.OverlappingFileRanges, Modder.init(std.testing.allocator, &parsed, &stream));
+    try std.testing.expectError(Error.IntersectingFileRanges, Modder.init(std.testing.allocator, &parsed, &stream));
 }
 
 test "repeated cave expansion equal to single cave" {

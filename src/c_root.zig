@@ -78,7 +78,16 @@ pub const Result: type = enum(u8) {
     ArchModeMismatch,
     NoFreeSpace,
     InvalidOptionalHeaderMagic,
-    OverlappingFileRanges,
+    IntersectingFileRanges,
+    IntersectingMemoryRanges,
+    IllogicalInsnToMove,
+    IllogicalJmpSize,
+    UnexpectedEof,
+    VirtualSizeLessThenFileSize,
+    InvalidElfRanges,
+    CantExpandPhdr,
+    FileszBiggerThenMemsz,
+    StartAfterEnd,
 };
 
 pub fn err_to_res(e: patch.Error) Result {
@@ -147,7 +156,16 @@ pub fn err_to_res(e: patch.Error) Result {
         patch.Error.ArchModeMismatch => .ArchModeMismatch,
         patch.Error.NoFreeSpace => .NoFreeSpace,
         patch.Error.InvalidOptionalHeaderMagic => .InvalidOptionalHeaderMagic,
-        patch.Error.OverlappingFileRanges => .OverlappingFileRanges,
+        patch.Error.IntersectingFileRanges => .IntersectingFileRanges,
+        patch.Error.IntersectingMemoryRanges => .IntersectingMemoryRanges,
+        patch.Error.IllogicalInsnToMove => .IllogicalInsnToMove,
+        patch.Error.IllogicalJmpSize => .IllogicalJmpSize,
+        patch.Error.UnexpectedEof => .UnexpectedEof,
+        patch.Error.VirtualSizeLessThenFileSize => .VirtualSizeLessThenFileSize,
+        patch.Error.InvalidElfRanges => .InvalidElfRanges,
+        patch.Error.CantExpandPhdr => .CantExpandPhdr,
+        patch.Error.FileszBiggerThenMemsz => .FileszBiggerThenMemsz,
+        patch.Error.StartAfterEnd => .StartAfterEnd,
     };
 }
 
