@@ -2,8 +2,10 @@ const std = @import("std");
 
 const binmodify = @import("binmodify");
 
-const elf = binmodify.elf;
-const coff = binmodify.coff;
+const ElfModder = binmodify.ElfModder;
+const CoffModder = binmodify.CoffModder;
+const ElfParsed = binmodify.ElfParsed;
+const CoffParsed = binmodify.CoffParsed;
 const arch = binmodify.arch;
 const patch = binmodify.patch;
 
@@ -48,8 +50,9 @@ pub fn main() !void {
     if (std.mem.eql(u8, buf[0..MZ.len], MZ)) {
         const data = try alloc.alloc(u8, try stream.getEndPos());
         defer alloc.free(data);
-        const coff_header = try std.coff.Coff.init(data, false);
-        var patcher = try patch.Patcher(coff.Modder).init(alloc, &stream, &coff_header);
+        const coff = try std.coff.Coff.init(data, false);
+        const parsed = CoffParsed.init(coff);
+        var patcher = try patch.Patcher(CoffModder).init(alloc, &stream, &parsed);
         defer patcher.deinit(alloc);
         std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
         try patcher.pure_patch(patch_addr, wanted_patch, &stream);
@@ -57,8 +60,8 @@ pub fn main() !void {
     } else {
         if ((try stream.read(buf[MZ.len..ELF.len])) != (ELF.len - MZ.len)) return Error.FileTypeNotSupported;
         if (std.mem.eql(u8, buf[0..ELF.len], ELF)) {
-            const header = try std.elf.Header.read(&stream);
-            var patcher = try patch.Patcher(elf.Modder).init(alloc, &stream, &header);
+            const parsed = try ElfParsed.init(&stream);
+            var patcher = try patch.Patcher(ElfModder).init(alloc, &stream, &parsed);
             defer patcher.deinit(alloc);
             std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
             try patcher.pure_patch(patch_addr, wanted_patch, &stream);
