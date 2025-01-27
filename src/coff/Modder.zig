@@ -273,6 +273,7 @@ test "create_cave same output" {
         const wanted_size = 0x1000;
         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
         defer std.testing.allocator.free(data);
+        std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
         const coff_header = try coff.Coff.init(data, false);
         var coff_modder: Modder = try Modder.init(std.testing.allocator, &coff_header);
         defer coff_modder.deinit(std.testing.allocator);
