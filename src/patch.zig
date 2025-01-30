@@ -185,9 +185,9 @@ test "elf nop patch no difference" {
 }
 
 test "coff nop patch no difference" {
-    if (builtin.os.tag != .windows) {
-        return error.SkipZigTest;
-    }
+    // if (builtin.os.tag != .windows) {
+    //     return error.SkipZigTest;
+    // }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_patch_path = "./coff_nop_patch_no_difference.exe";
     const cwd: std.fs.Dir = std.fs.cwd();
@@ -195,18 +195,18 @@ test "coff nop patch no difference" {
     {
         const build_src_result = try std.process.Child.run(.{
             .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
         });
         defer std.testing.allocator.free(build_src_result.stdout);
         defer std.testing.allocator.free(build_src_result.stderr);
-        std.testing.expect(build_src_result.term == .Exited);
-        std.testing.expect(build_src_result.stderr.len == 0);
+        try std.testing.expect(build_src_result.term == .Exited);
+        try std.testing.expect(build_src_result.stderr.len == 0);
     }
 
     // check regular output.
     const no_patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
+        .argv = &[_][]const u8{ "wine", test_with_patch_path },
     });
     defer std.testing.allocator.free(no_patch_result.stdout);
     defer std.testing.allocator.free(no_patch_result.stderr);
@@ -218,6 +218,7 @@ test "coff nop patch no difference" {
         const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
         defer std.testing.allocator.free(data);
+        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
         const coff = try std.coff.Coff.init(data, false);
         const parsed = CoffParsed.init(coff);
         var patcher: Patcher(CoffModder) = try Patcher(CoffModder).init(std.testing.allocator, &stream, &parsed);
@@ -228,7 +229,7 @@ test "coff nop patch no difference" {
     // check output with a cave
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
+        .argv = &[_][]const u8{ "wine", test_with_patch_path },
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
@@ -307,7 +308,7 @@ test "elf fizzbuzz fizz always" {
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         try stream.seekTo(0xE0F);
-        const overwrite = [_]u8{0x83}; // changing je to jae
+        const overwrite = [_]u8{0x83}; // changing je to jnb
         try std.testing.expectEqual(overwrite.len, try stream.write(&overwrite));
         const patch = [_]u8{ 0xFE, 0xC3 } ** 0x2; // inc bl; inc bl;
         const parsed = try ElfParsed.init(&stream);
@@ -320,6 +321,102 @@ test "elf fizzbuzz fizz always" {
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
         .argv = &[_][]const u8{test_with_patch_path},
+    });
+    defer std.testing.allocator.free(patch_result.stdout);
+    defer std.testing.allocator.free(patch_result.stderr);
+    try std.testing.expectEqual(no_patch_result.term, patch_result.term);
+    try std.testing.expectEqualStrings(expected_output, patch_result.stdout);
+    try std.testing.expectEqualStrings(no_patch_result.stderr, patch_result.stderr);
+}
+
+test "coff fizzbuzz fizz always" {
+    // if (builtin.os.tag != .windows) {
+    //     return error.SkipZigTest;
+    // }
+    const test_src_path = "./tests/fizzbuzz.zig";
+    const test_with_patch_path = "./coff_fizzbuzz_fizz_always.exe";
+    const cwd: std.fs.Dir = std.fs.cwd();
+
+    {
+        const build_src_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_src_result.stdout);
+        defer std.testing.allocator.free(build_src_result.stderr);
+        try std.testing.expect(build_src_result.term == .Exited);
+        try std.testing.expect(build_src_result.stderr.len == 0);
+    }
+
+    const expected_output =
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz Buzz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz Buzz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz Buzz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz Buzz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz Buzz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz Buzz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\Fizz
+        \\
+    ;
+
+    // check regular output.
+    const no_patch_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{ "wine", test_with_patch_path },
+    });
+    defer std.testing.allocator.free(no_patch_result.stdout);
+    defer std.testing.allocator.free(no_patch_result.stderr);
+
+    {
+        var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
+        defer f.close();
+        var stream = std.io.StreamSource{ .file = f };
+        try stream.seekTo(0x49D);
+        const overwrite = [_]u8{0x83}; // changing je to jae
+        try std.testing.expectEqual(overwrite.len, try stream.write(&overwrite));
+        try stream.seekTo(0);
+        const patch = [_]u8{ 0xFE, 0xC3 } ** 0x2; // inc bl; inc bl;
+        const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
+        defer std.testing.allocator.free(data);
+        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
+        const coff = try std.coff.Coff.init(data, false);
+        const parsed = CoffParsed.init(coff);
+        var patcher: Patcher(CoffModder) = try Patcher(CoffModder).init(std.testing.allocator, &stream, &parsed);
+        defer patcher.deinit(std.testing.allocator);
+        try patcher.pure_patch(0x4010A2, &patch, &stream);
+    }
+
+    // check output with a cave
+    const patch_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{ "wine", test_with_patch_path },
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);

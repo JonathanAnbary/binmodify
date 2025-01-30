@@ -78,7 +78,7 @@ pub const CtlFlowAssembler: type = struct {
     pub fn init(curr_arch: arch.Arch, mode: arch.Mode, endian: arch.Endian) arch.Error!Self {
         switch (curr_arch) {
             .X86 => switch (mode) {
-                .MODE_64 => {},
+                .MODE_64, .MODE_32 => {},
                 else => return arch.Error.ModeNotSupported,
             },
             else => return arch.Error.ArchNotSupported,
@@ -108,6 +108,7 @@ pub const CtlFlowAssembler: type = struct {
         return switch (self.arch) {
             .X86 => switch (self.mode) {
                 .MODE_64 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
+                .MODE_32 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
                 else => arch.Error.ModeNotSupported,
             },
             .ARM => switch (self.mode) {
@@ -130,6 +131,7 @@ pub const CtlFlowAssembler: type = struct {
         return switch (self.arch) {
             .X86 => switch (self.mode) {
                 .MODE_64 => target - (addr + 0x5),
+                .MODE_32 => target - (addr + 0x5),
                 else => arch.Error.ModeNotSupported,
             },
             .ARM => switch (self.mode) {
@@ -202,6 +204,20 @@ test "assemble control flow transfer" {
         try assemble_ctl_transfer(
             arch.Arch.X86,
             arch.Mode.MODE_64,
+            .little,
+            from,
+            try std.fmt.parseInt(u64, to, 0),
+            &buf,
+        ),
+    );
+    const assembled2 = try ks_assemble(to_ks_arch(arch.Arch.X86), try to_ks_mode(arch.Arch.X86, arch.Mode.MODE_32), "jmp " ++ to, from); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
+    defer keystone.ks_free(assembled2.ptr);
+    try std.testing.expectEqualSlices(
+        u8,
+        assembled2,
+        try assemble_ctl_transfer(
+            arch.Arch.X86,
+            arch.Mode.MODE_32,
             .little,
             from,
             try std.fmt.parseInt(u64, to, 0),

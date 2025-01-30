@@ -1,5 +1,4 @@
 const std = @import("std");
-const coff = std.coff;
 
 const builtin = @import("builtin");
 const native_endian = builtin.target.cpu.arch.endian();
@@ -9,12 +8,12 @@ const common = @import("../common.zig");
 
 const Parsed = @import("Parsed.zig");
 
-fn off_lessThanFn(sechdrs: []const coff.SectionHeader, lhs: usize, rhs: usize) bool {
+fn off_lessThanFn(sechdrs: []const std.coff.SectionHeader, lhs: usize, rhs: usize) bool {
     return sechdrs[lhs].pointer_to_raw_data < sechdrs[rhs].pointer_to_raw_data;
 }
 
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
-fn addr_lessThanFn(sechdrs: []const coff.SectionHeader, lhs: usize, rhs: usize) bool {
+fn addr_lessThanFn(sechdrs: []const std.coff.SectionHeader, lhs: usize, rhs: usize) bool {
     return sechdrs[lhs].virtual_address < sechdrs[rhs].virtual_address;
 }
 
@@ -27,14 +26,14 @@ pub const Error = error{
     IntersectingFileRanges,
     UnexpectedEof,
     VirtualSizeLessThenFileSize,
-} || coff.CoffError;
+} || std.coff.CoffError;
 
 pub const SecEdge: type = struct {
     sec_idx: usize,
     is_end: bool,
 };
 
-const SectionHeaderFields = std.meta.FieldEnum(coff.SectionHeader);
+const SectionHeaderFields = std.meta.FieldEnum(std.coff.SectionHeader);
 
 const PartialHeader = struct {
     file_alignment: u32,
@@ -46,7 +45,7 @@ const PartialHeader = struct {
 const Modder = @This();
 
 header: PartialHeader,
-sechdrs: []coff.SectionHeader,
+sechdrs: []std.coff.SectionHeader,
 off_sort: [*]usize,
 sec_to_off: [*]usize,
 addr_sort: [*]usize,
@@ -80,8 +79,8 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     return Modder{
         .header = .{
             .file_alignment = switch (optional_header.magic) {
-                coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => parsed_source.coff.getOptionalHeader64().file_alignment,
-                coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => parsed_source.coff.getOptionalHeader32().file_alignment,
+                std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => parsed_source.coff.getOptionalHeader64().file_alignment,
+                std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => parsed_source.coff.getOptionalHeader32().file_alignment,
                 else => return Error.InvalidOptionalHeaderMagic,
             },
             .image_base = parsed_source.coff.getImageBase(),
@@ -122,11 +121,11 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.File
             .is_end = true,
         };
         // NOTE: not doing start caves since I am not sure how to resolve the alignment requirements of section start address.
-        // const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
-        // if (self.sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
-        //     .sec_idx = sec_idx,
-        //     .is_end = false,
-        // };
+        const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
+        if (self.sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
+            .sec_idx = sec_idx,
+            .is_end = false,
+        };
     }
     return null;
 }
@@ -151,11 +150,11 @@ fn calc_new_offset(self: *const Modder, index: usize, size: u64) !u64 {
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
 fn set_sechdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, parse_source: anytype) !void {
-    const offset = self.header.coff_header_offset + @sizeOf(coff.CoffHeader) + self.header.size_of_optional_header;
-    try parse_source.seekTo(offset + @sizeOf(coff.SectionHeader) * index);
-    const T = std.meta.fieldInfo(coff.SectionHeader, @field(SectionHeaderFields, field_name)).type;
+    const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + self.header.size_of_optional_header;
+    try parse_source.seekTo(offset + @sizeOf(std.coff.SectionHeader) * index);
+    const T = std.meta.fieldInfo(std.coff.SectionHeader, @field(SectionHeaderFields, field_name)).type;
     const temp: T = @intCast(val);
-    try parse_source.seekBy(@offsetOf(coff.SectionHeader, field_name));
+    try parse_source.seekBy(@offsetOf(std.coff.SectionHeader, field_name));
     const temp2 = std.mem.toBytes(temp);
     if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     @field(self.sechdrs[index], field_name) = @intCast(val);
@@ -194,7 +193,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
     }
     try self.set_sechdr_field(edge.sec_idx, self.sechdrs[edge.sec_idx].size_of_raw_data + size, "size_of_raw_data", parse_source);
     try self.set_sechdr_field(edge.sec_idx, self.sechdrs[edge.sec_idx].virtual_size + size, "virtual_size", parse_source);
-    // TODO: adjust sections as well (and maybe debug info?)
+    // TODO: might need to adjust some more things.
 }
 
 const CompareContext = struct {
@@ -239,9 +238,9 @@ pub fn cave_to_off(self: Modder, cave: SecEdge, size: u64) u64 {
 }
 
 test "create_cave same output" {
-    if (builtin.os.tag != .windows) {
-        return error.SkipZigTest;
-    }
+    // if (builtin.os.tag != .windows) {
+    //     return error.SkipZigTest;
+    // }
 
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./create_cave_same_output_coff.exe";
@@ -250,18 +249,18 @@ test "create_cave same output" {
     {
         const build_src_result = try std.process.Child.run(.{
             .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=coff", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
+            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
         });
         defer std.testing.allocator.free(build_src_result.stdout);
         defer std.testing.allocator.free(build_src_result.stderr);
-        std.testing.expect(build_src_result.term == .Exited);
-        std.testing.expect(build_src_result.stderr.len == 0);
+        try std.testing.expect(build_src_result.term == .Exited);
+        try std.testing.expect(build_src_result.stderr.len == 0);
     }
 
     // check regular output.
     const no_cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
+        .argv = &[_][]const u8{ "wine", test_with_cave },
     });
     defer std.testing.allocator.free(no_cave_result.stdout);
     defer std.testing.allocator.free(no_cave_result.stderr);
@@ -273,9 +272,10 @@ test "create_cave same output" {
         const wanted_size = 0x1000;
         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
         defer std.testing.allocator.free(data);
-        std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
-        const coff_header = try coff.Coff.init(data, false);
-        var coff_modder: Modder = try Modder.init(std.testing.allocator, &coff_header);
+        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
+        const coff = try std.coff.Coff.init(data, false);
+        const parsed = Parsed.init(coff);
+        var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer coff_modder.deinit(std.testing.allocator);
         const option = (try coff_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
         try coff_modder.create_cave(wanted_size, option, &stream);
@@ -284,7 +284,7 @@ test "create_cave same output" {
     // check output with a cave
     const cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
+        .argv = &[_][]const u8{ "wine", test_with_cave },
     });
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);

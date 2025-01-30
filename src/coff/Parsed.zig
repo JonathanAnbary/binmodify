@@ -14,25 +14,29 @@ pub fn init(coff: std.coff.Coff) Self {
 
 pub fn get_arch(self: *const Self) !arch.Arch {
     return switch (self.coff.getCoffHeader().machine) {
-        .X64 => .X86,
+        .X64, .I386 => .X86,
         else => arch.Error.ArchNotSupported,
     };
 }
 
 pub fn get_mode(self: *const Self) !arch.Mode {
     return switch (self.coff.getCoffHeader().machine) {
-        .X64 => switch (self.coff.getOptionalHeader().magic) {
-            std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => .MODE_32,
-            std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => .MODE_64,
-            else => std.coff.CoffError.InvalidPEMagic,
+        .X64 => blk: {
+            std.debug.assert(self.coff.getOptionalHeader().magic == std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+            break :blk .MODE_64;
         },
+        .I386 => blk: {
+            std.debug.assert(self.coff.getOptionalHeader().magic == std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC);
+            break :blk .MODE_32;
+        },
+
         else => arch.Error.ArchNotSupported,
     };
 }
 
 pub fn get_endian(self: *const Self) !arch.Endian {
     return switch (self.coff.getCoffHeader().machine) {
-        .X64 => .little,
+        .X64, .I386 => .little,
         else => arch.Error.ArchNotSupported,
     };
 }
