@@ -223,7 +223,7 @@ test "coff nop patch no difference" {
         const parsed = CoffParsed.init(coff);
         var patcher: Patcher(CoffModder) = try Patcher(CoffModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        try patcher.pure_patch(0x140001F88, &patch, &stream);
+        try patcher.pure_patch(0x40115F, &patch, &stream);
     }
 
     // check output with a cave

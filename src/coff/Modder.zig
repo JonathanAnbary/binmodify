@@ -75,6 +75,9 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
         sec_to_addr[addr_idx] = idx;
     }
     const optional_header = parsed_source.coff.getOptionalHeader();
+    for (sechdrs) |*sechdr| {
+        std.debug.print("{X}\n", .{sechdr.virtual_address});
+    }
 
     return Modder{
         .header = .{
@@ -206,7 +209,10 @@ fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
 }
 
 pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
+    std.debug.print("addr = {x}\n", .{addr});
+    std.debug.print("self.header.image_base = {x}\n", .{self.header.image_base});
     const normalized_addr = if (addr < self.header.image_base) return Error.AddrNotMapped else addr - self.header.image_base;
+    std.debug.print("normalized_addr = {X}\n", .{normalized_addr});
     const containnig_idx = self.addr_to_idx(normalized_addr);
     if (!(normalized_addr < (self.sechdrs[containnig_idx].virtual_address + self.sechdrs[containnig_idx].virtual_address))) return Error.AddrNotMapped;
     const potenital_off = self.sechdrs[containnig_idx].pointer_to_raw_data + normalized_addr - self.sechdrs[containnig_idx].virtual_address;
