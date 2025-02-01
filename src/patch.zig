@@ -113,7 +113,13 @@ pub fn Patcher(T: type) type {
             const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
             if (insn_to_move_siz >= buff.len) return Error.IllogicalInsnToMove;
             const cave_option = (try self.modder.get_cave_option(cave_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
-            try self.modder.create_cave(cave_size, cave_option, stream);
+            // std.debug.print("\ncave_option = {}\n", .{cave_option});
+            // try self.modder.create_cave(cave_size, cave_option, stream);
+            // if (T == CoffModder) {
+            //     for (self.modder.sechdrs) |*sechdr| {
+            //         std.debug.print("{X} - {X} - {X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_size, sechdr.pointer_to_raw_data, sechdr.size_of_raw_data });
+            //     }
+            // }
             const off_after_patch = try self.modder.addr_to_off(addr);
             // TODO: mismatch between filesz and memsz is gonna screw me over.
             const cave_off = self.modder.cave_to_off(cave_option, cave_size);
@@ -225,7 +231,7 @@ test "coff nop patch no difference" {
         const parsed = CoffParsed.init(coff);
         var patcher: Patcher(CoffModder) = try Patcher(CoffModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        try patcher.pure_patch(0x40115F, &patch, &stream);
+        try patcher.pure_patch(0x1400011BB, &patch, &stream);
     }
 
     // check output with a cave

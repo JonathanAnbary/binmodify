@@ -76,6 +76,11 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     }
     const optional_header = parsed_source.coff.getOptionalHeader();
 
+    // std.debug.print("\n", .{});
+    // for (sechdrs) |*sechdr| {
+    //     std.debug.print("{X} - {X} - {X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_size, sechdr.pointer_to_raw_data, sechdr.size_of_raw_data });
+    // }
+
     return Modder{
         .header = .{
             .file_alignment = switch (optional_header.magic) {
@@ -121,11 +126,11 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.File
             .is_end = true,
         };
         // NOTE: not doing start caves since I am not sure how to resolve the alignment requirements of section start address.
-        const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
-        if (self.sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
-            .sec_idx = sec_idx,
-            .is_end = false,
-        };
+        // const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
+        // if (self.sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
+        //     .sec_idx = sec_idx,
+        //     .is_end = false,
+        // };
     }
     return null;
 }
@@ -134,8 +139,13 @@ fn calc_new_offset(self: *const Modder, index: usize, size: u64) !u64 {
     // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
     // and for the case of a start edge whith enough space from the previous segment offset.
     const align_offset = (self.sechdrs[index].pointer_to_raw_data + (self.header.file_alignment - (size % self.header.file_alignment))) % self.header.file_alignment;
-    const temp = self.off_sort[self.sec_to_off[index] - 1];
-    const prev_off_end = self.sechdrs[temp].pointer_to_raw_data + self.sechdrs[temp].size_of_raw_data;
+    const prev_off_end = blk: {
+        const off_idx = self.sec_to_off[index];
+        if (self.sec_to_off[index] > 0) {
+            const temp = self.off_sort[off_idx - 1];
+            break :blk self.sechdrs[temp].pointer_to_raw_data + self.sechdrs[temp].size_of_raw_data;
+        } else break :blk 0;
+    };
     if (prev_off_end > self.sechdrs[index].pointer_to_raw_data) return Error.IntersectingFileRanges;
     const new_offset = if (self.sechdrs[index].pointer_to_raw_data > (size + prev_off_end))
         (self.sechdrs[index].pointer_to_raw_data - size)
@@ -215,6 +225,9 @@ pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
 }
 
 fn addr_to_idx(self: *const Modder, addr: u64) usize {
+    const temp = std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
+    std.debug.print("\nself.sechdrs[self.addr_sort[temp]].virtual_address = {X}\n", .{self.sechdrs[self.addr_sort[temp]].virtual_address});
+    std.debug.print("addr = {X}\n", .{addr});
     return self.addr_sort[std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1];
 }
 
