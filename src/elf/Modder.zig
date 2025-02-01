@@ -660,7 +660,9 @@ test "create cave same output" {
     });
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);
-    try std.testing.expect(cave_result.term.Exited == no_cave_result.term.Exited);
+    try std.testing.expect(cave_result.term == .Exited);
+    try std.testing.expect(no_cave_result.term == .Exited);
+    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
     try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
     try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
 }

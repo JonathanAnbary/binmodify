@@ -179,7 +179,9 @@ test "elf nop patch no difference" {
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expect(patch_result.term.Exited == no_patch_result.term.Exited);
+    try std.testing.expect(patch_result.term == .Exited);
+    try std.testing.expect(no_patch_result.term == .Exited);
+    try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
     try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
     try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
 }
@@ -195,7 +197,7 @@ test "coff nop patch no difference" {
     {
         const build_src_result = try std.process.Child.run(.{
             .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86_64-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
         });
         defer std.testing.allocator.free(build_src_result.stdout);
         defer std.testing.allocator.free(build_src_result.stderr);
@@ -233,7 +235,9 @@ test "coff nop patch no difference" {
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expect(patch_result.term.Exited == no_patch_result.term.Exited);
+    try std.testing.expect(patch_result.term == .Exited);
+    try std.testing.expect(no_patch_result.term == .Exited);
+    try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
     try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
     try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
 }
@@ -307,14 +311,14 @@ test "elf fizzbuzz fizz always" {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
-        try stream.seekTo(0xE0F);
-        const overwrite = [_]u8{0x83}; // changing je to jnb
+        try stream.seekTo(0xE55);
+        const overwrite = [_]u8{0x83}; // changing jz to jae
         try std.testing.expectEqual(overwrite.len, try stream.write(&overwrite));
         const patch = [_]u8{ 0xFE, 0xC3 } ** 0x2; // inc bl; inc bl;
         const parsed = try ElfParsed.init(&stream);
         var patcher: Patcher(ElfModder) = try Patcher(ElfModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        try patcher.pure_patch(0x1001E14, &patch, &stream);
+        try patcher.pure_patch(0x1001E5A, &patch, &stream);
     }
 
     // check output with a cave
@@ -324,7 +328,9 @@ test "elf fizzbuzz fizz always" {
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expectEqual(no_patch_result.term, patch_result.term);
+    try std.testing.expect(no_patch_result.term == .Exited);
+    try std.testing.expect(patch_result.term == .Exited);
+    try std.testing.expectEqual(no_patch_result.term.Exited, patch_result.term.Exited);
     try std.testing.expectEqualStrings(expected_output, patch_result.stdout);
     try std.testing.expectEqualStrings(no_patch_result.stderr, patch_result.stderr);
 }
@@ -340,7 +346,7 @@ test "coff fizzbuzz fizz always" {
     {
         const build_src_result = try std.process.Child.run(.{
             .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86_64-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
         });
         defer std.testing.allocator.free(build_src_result.stdout);
         defer std.testing.allocator.free(build_src_result.stderr);
@@ -398,11 +404,11 @@ test "coff fizzbuzz fizz always" {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
-        try stream.seekTo(0x49D);
+        try stream.seekTo(0x4E1);
         const overwrite = [_]u8{0x83}; // changing je to jae
         try std.testing.expectEqual(overwrite.len, try stream.write(&overwrite));
         try stream.seekTo(0);
-        const patch = [_]u8{ 0xFE, 0xC3 } ** 0x2; // inc bl; inc bl;
+        const patch = [_]u8{ 0x41, 0xFE, 0xC5 } ** 0x2; // inc r13b; inc r13b;
         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
         defer std.testing.allocator.free(data);
         try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
@@ -410,7 +416,7 @@ test "coff fizzbuzz fizz always" {
         const parsed = CoffParsed.init(coff);
         var patcher: Patcher(CoffModder) = try Patcher(CoffModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        try patcher.pure_patch(0x4010A2, &patch, &stream);
+        try patcher.pure_patch(0x1400010E6, &patch, &stream);
     }
 
     // check output with a cave
@@ -420,7 +426,9 @@ test "coff fizzbuzz fizz always" {
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expectEqual(no_patch_result.term, patch_result.term);
+    try std.testing.expect(no_patch_result.term == .Exited);
+    try std.testing.expect(patch_result.term == .Exited);
+    try std.testing.expectEqual(no_patch_result.term.Exited, patch_result.term.Exited);
     try std.testing.expectEqualStrings(expected_output, patch_result.stdout);
     try std.testing.expectEqualStrings(no_patch_result.stderr, patch_result.stderr);
 }

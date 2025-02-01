@@ -25,6 +25,9 @@
       packages = [
         zls
         zig
+        pkgs.wine64
+        pkgs.wineWowPackages.stable
+        pkgs.winetricks
         (pkgs.python3.withPackages (python-pkgs: with python-pkgs; [
         # select Python packages here
         ipython

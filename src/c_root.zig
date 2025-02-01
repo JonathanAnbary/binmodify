@@ -246,7 +246,7 @@ test "c patcher api elf" {
         const res = ElfPatcher_init(&patcher, &stream);
         try std.testing.expectEqual(.Ok, res);
         defer ElfPatcher_deinit(&patcher);
-        try std.testing.expectEqual(.Ok, ElfPatcher_pure_patch(&patcher, 0x1001B3C, patch_data, &stream));
+        try std.testing.expectEqual(.Ok, ElfPatcher_pure_patch(&patcher, 0x1001B43, patch_data, &stream));
     }
 
     // check output with a cave

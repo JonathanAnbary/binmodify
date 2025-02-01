@@ -75,9 +75,6 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
         sec_to_addr[addr_idx] = idx;
     }
     const optional_header = parsed_source.coff.getOptionalHeader();
-    for (sechdrs) |*sechdr| {
-        std.debug.print("{X}\n", .{sechdr.virtual_address});
-    }
 
     return Modder{
         .header = .{
@@ -209,10 +206,7 @@ fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
 }
 
 pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
-    std.debug.print("addr = {x}\n", .{addr});
-    std.debug.print("self.header.image_base = {x}\n", .{self.header.image_base});
     const normalized_addr = if (addr < self.header.image_base) return Error.AddrNotMapped else addr - self.header.image_base;
-    std.debug.print("normalized_addr = {X}\n", .{normalized_addr});
     const containnig_idx = self.addr_to_idx(normalized_addr);
     if (!(normalized_addr < (self.sechdrs[containnig_idx].virtual_address + self.sechdrs[containnig_idx].virtual_address))) return Error.AddrNotMapped;
     const potenital_off = self.sechdrs[containnig_idx].pointer_to_raw_data + normalized_addr - self.sechdrs[containnig_idx].virtual_address;
@@ -255,7 +249,7 @@ test "create_cave same output" {
     {
         const build_src_result = try std.process.Child.run(.{
             .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
+            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86_64-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
         });
         defer std.testing.allocator.free(build_src_result.stdout);
         defer std.testing.allocator.free(build_src_result.stderr);
@@ -275,7 +269,7 @@ test "create_cave same output" {
         var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
-        const wanted_size = 0x1000;
+        const wanted_size = 0x100;
         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
         defer std.testing.allocator.free(data);
         try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
@@ -294,7 +288,8 @@ test "create_cave same output" {
     });
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);
-    try std.testing.expect(cave_result.term.Exited == no_cave_result.term.Exited);
+    try std.testing.expect(cave_result.term == .Exited);
+    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
     try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
     try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
 }
