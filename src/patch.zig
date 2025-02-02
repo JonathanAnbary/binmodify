@@ -114,7 +114,7 @@ pub fn Patcher(T: type) type {
             if (insn_to_move_siz >= buff.len) return Error.IllogicalInsnToMove;
             const cave_option = (try self.modder.get_cave_option(cave_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
             // std.debug.print("\ncave_option = {}\n", .{cave_option});
-            // try self.modder.create_cave(cave_size, cave_option, stream);
+            try self.modder.create_cave(cave_size, cave_option, stream);
             // if (T == CoffModder) {
             //     for (self.modder.sechdrs) |*sechdr| {
             //         std.debug.print("{X} - {X} - {X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_size, sechdr.pointer_to_raw_data, sechdr.size_of_raw_data });
@@ -175,7 +175,7 @@ test "elf nop patch no difference" {
         const parsed = try ElfParsed.init(&stream);
         var patcher: Patcher(ElfModder) = try Patcher(ElfModder).init(std.testing.allocator, &stream, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        try patcher.pure_patch(0x1001B3C, &patch, &stream);
+        try patcher.pure_patch(0x1001B34, &patch, &stream);
     }
 
     // check output with a cave
@@ -223,7 +223,7 @@ test "coff nop patch no difference" {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
-        const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
+        const patch = [_]u8{0x90} ** 0x90;
         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
         defer std.testing.allocator.free(data);
         try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));

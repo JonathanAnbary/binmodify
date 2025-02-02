@@ -225,9 +225,9 @@ pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
 }
 
 fn addr_to_idx(self: *const Modder, addr: u64) usize {
-    const temp = std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
-    std.debug.print("\nself.sechdrs[self.addr_sort[temp]].virtual_address = {X}\n", .{self.sechdrs[self.addr_sort[temp]].virtual_address});
-    std.debug.print("addr = {X}\n", .{addr});
+    // const temp = std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
+    // std.debug.print("\nself.sechdrs[self.addr_sort[temp]].virtual_address = {X}\n", .{self.sechdrs[self.addr_sort[temp]].virtual_address});
+    // std.debug.print("addr = {X}\n", .{addr});
     return self.addr_sort[std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1];
 }
 
