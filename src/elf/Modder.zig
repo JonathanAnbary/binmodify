@@ -77,7 +77,10 @@ fn off_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usize
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
 fn addr_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usize) bool {
     const addrs = ranges.items(FileRangeFields.addr);
-    return addrs[lhs] < addrs[rhs];
+    const memszs = ranges.items(FileRangeFields.memsz);
+    return ((addrs[lhs] < addrs[rhs]) or
+        ((addrs[lhs] == addrs[rhs]) and
+        (memszs[lhs] > memszs[rhs])));
 }
 
 fn sec_offset_lessThanFn(shdrs: *std.MultiArrayList(elf.Elf64_Shdr), lhs: usize, rhs: usize) bool {
@@ -87,7 +90,7 @@ fn sec_offset_lessThanFn(shdrs: *std.MultiArrayList(elf.Elf64_Shdr), lhs: usize,
 const FileRange: type = struct {
     off: u64,
     filesz: u64,
-    addr: u64,
+    addr: u64, // TODO: should be nullable
     memsz: u64,
     alignment: u64,
     flags: common.FileRangeFlags,
@@ -213,10 +216,25 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
     var addr_containing_index = addr_sort[0];
     var addr_containing_count: usize = 1;
     if (addrs[addr_containing_index] != 0) return Error.InvalidElfRanges;
+    // std.debug.print("\n", .{});
+    // for (0..parsed.header.phnum) |i| {
+    //     std.debug.print("{} phdr - {X} - {X} ({X} - {X})\n", .{ i, offs[i], offs[i] + fileszs[i], addrs[i], addrs[i] + memszs[i] });
+    // }
+    // for (parsed.header.phnum..parsed.header.phnum + parsed.header.shnum) |i| {
+    //     std.debug.print("{} shdr {X} - {X} ({X} - {X})\n", .{ i, offs[i], offs[i] + fileszs[i], addrs[i], addrs[i] + memszs[i] });
+    // }
+    // const temp5 = parsed.header.phnum + parsed.header.shnum;
+    // std.debug.print("{} shdr_table {X} - {X} ({X} - {X})\n", .{ temp5, offs[temp5], offs[temp5] + fileszs[temp5], addrs[temp5], addrs[temp5] + memszs[temp5] });
+    // std.debug.print("\nranges.len = {}\n", .{ranges.len});
     for (addr_sort[1..]) |index| {
         const addr = addrs[index];
+        // std.debug.print("addr[{}] = {X}\n", .{ index, addr });
+        // std.debug.print("addrs[{}] = {X}\n", .{ addr_containing_index, addrs[addr_containing_index] });
         if (addr < (addrs[addr_containing_index] + memszs[addr_containing_index])) {
-            if ((addr + memszs[index]) > (addrs[addr_containing_index] + memszs[addr_containing_index])) return Error.IntersectingMemoryRanges;
+            if ((addr + memszs[index]) > (addrs[addr_containing_index] + memszs[addr_containing_index])) {
+                // std.debug.print("\n{X} > {X}\n", .{ (addr + memszs[index]), (addrs[addr_containing_index] + memszs[addr_containing_index]) });
+                return Error.IntersectingMemoryRanges;
+            }
         } else {
             addr_containing_index = index;
             addr_containing_count += 1;
@@ -754,4 +772,58 @@ test "repeated cave expansion equal to single cave" {
         try std.testing.expectEqualSlices(u8, buf2[0..read_amt2], buf1[0..read_amt1]);
     }
     try std.testing.expectEqual(try f_non_repeated.getEndPos(), try f_non_repeated.getPos());
+}
+
+test "create cave same output Debug" {
+    // this test is kind of annoying since technically Debug build is not guarenteed reproducibility.
+    if (builtin.os.tag != .linux) {
+        error.SkipZigTest;
+    }
+    const test_src_path = "./tests/hello_world.zig";
+    const test_with_cave = "./create_cave_same_output_elf_debug";
+    const cwd: std.fs.Dir = std.fs.cwd();
+
+    {
+        const build_src_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-ofmt=elf", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_src_result.stdout);
+        defer std.testing.allocator.free(build_src_result.stderr);
+        try std.testing.expect(build_src_result.term == .Exited);
+        try std.testing.expect(build_src_result.stderr.len == 0);
+    }
+
+    // check regular output.
+    const no_cave_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{test_with_cave},
+    });
+    defer std.testing.allocator.free(no_cave_result.stdout);
+    defer std.testing.allocator.free(no_cave_result.stderr);
+
+    {
+        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
+        defer f.close();
+        var stream = std.io.StreamSource{ .file = f };
+        const wanted_size = 0xfff;
+        const parsed = try Parsed.init(&stream);
+        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+        defer elf_modder.deinit(std.testing.allocator);
+        const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
+        try elf_modder.create_cave(wanted_size, option, &stream);
+    }
+
+    // check output with a cave
+    const cave_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{test_with_cave},
+    });
+    defer std.testing.allocator.free(cave_result.stdout);
+    defer std.testing.allocator.free(cave_result.stderr);
+    try std.testing.expect(cave_result.term == .Exited);
+    try std.testing.expect(no_cave_result.term == .Exited);
+    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
+    try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
+    try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
 }
