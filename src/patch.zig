@@ -193,9 +193,9 @@ test "elf nop patch no difference" {
 }
 
 test "coff nop patch no difference" {
-    // if (builtin.os.tag != .windows) {
-    //     return error.SkipZigTest;
-    // }
+    if (builtin.os.tag != .windows) {
+        return error.SkipZigTest;
+    }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_patch_path = "./coff_nop_patch_no_difference.exe";
     const cwd: std.fs.Dir = std.fs.cwd();
@@ -342,9 +342,9 @@ test "elf fizzbuzz fizz always" {
 }
 
 test "coff fizzbuzz fizz always" {
-    // if (builtin.os.tag != .windows) {
-    //     return error.SkipZigTest;
-    // }
+    if (builtin.os.tag != .windows) {
+        return error.SkipZigTest;
+    }
     const test_src_path = "./tests/fizzbuzz.zig";
     const test_with_patch_path = "./coff_fizzbuzz_fizz_always.exe";
     const cwd: std.fs.Dir = std.fs.cwd();

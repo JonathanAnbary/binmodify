@@ -251,9 +251,9 @@ pub fn cave_to_off(self: Modder, cave: SecEdge, size: u64) u64 {
 }
 
 test "create_cave same output" {
-    // if (builtin.os.tag != .windows) {
-    //     return error.SkipZigTest;
-    // }
+    if (builtin.os.tag != .windows) {
+        return error.SkipZigTest;
+    }
 
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./create_cave_same_output_coff.exe";

@@ -88,6 +88,8 @@ pub const Result: type = enum(u8) {
     CantExpandPhdr,
     FileszBiggerThenMemsz,
     StartAfterEnd,
+    OutOfBoundField,
+    UnmappedRange,
 };
 
 pub fn err_to_res(e: patch.Error) Result {
@@ -166,6 +168,8 @@ pub fn err_to_res(e: patch.Error) Result {
         patch.Error.CantExpandPhdr => .CantExpandPhdr,
         patch.Error.FileszBiggerThenMemsz => .FileszBiggerThenMemsz,
         patch.Error.StartAfterEnd => .StartAfterEnd,
+        patch.Error.OutOfBoundField => .OutOfBoundField,
+        patch.Error.UnmappedRange => .UnmappedRange,
     };
 }
 
