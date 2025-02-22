@@ -456,9 +456,7 @@ fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, parse_source: any
         const final_off_idx = if ((top_index + 1) == self.top_offs.len) self.ranges.len else self.top_offs[top_index + 1];
         for (top_off_idx..final_off_idx) |off_idx| {
             const index = self.off_sort[off_idx];
-            std.debug.print("old {X}, new ", .{offs[index]});
             offs[index] += self.adjustments[i];
-            std.debug.print("{X}, align {X}\n", .{ offs[index], aligns[index] });
             try self.set_filerange_field(index, offs[index], .off, parse_source);
         }
     }
@@ -508,7 +506,6 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
     const idx = self.off_sort[self.top_offs[edge.top_idx]];
     // const shoff_top_idx = self.off_to_top_idx(self.header.shoff);
 
-    std.debug.print("size = {X}\n", .{size});
     const old_offset: u64 = offs[idx];
     const new_offset: u64 = if (edge.is_end) old_offset else try self.calc_new_off(edge.top_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < old_offset) size - (old_offset - new_offset) else size + (new_offset - old_offset);
@@ -522,12 +519,9 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
         // if (shoff_top_idx == edge.top_idx) {
         //     try self.set_ehdr_field(self.header.shoff + new_offset + size - old_offset, "shoff", parse_source);
         // }
-        std.debug.print("shifting forward by {X}\n", .{first_adjust});
         try shift.shift_forward(parse_source, old_offset, old_offset + fileszs[idx], first_adjust);
 
-        std.debug.print("old - {X}", .{offs[idx]});
         offs[idx] = new_offset;
-        std.debug.print(", new - {X}\n", .{offs[idx]});
         try self.set_filerange_field(idx, offs[idx], .off, parse_source);
 
         for (top_off_idx + 1..final_off_idx) |off_idx| {
@@ -550,9 +544,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
             //     addrs[index] -= size;
             //     offs[index] = new_offset;
             // } else {
-            std.debug.print("old - {X}", .{offs[index]});
             offs[index] = offs[index] + first_adjust;
-            std.debug.print(", new - {X}\n", .{offs[index]});
             try self.set_filerange_field(index, offs[index], .off, parse_source);
             // }
         }
@@ -809,7 +801,6 @@ test "create cave same output" {
         const parsed = try Parsed.init(&stream);
         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        print_modelf(elf_modder);
         const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
         try elf_modder.create_cave(wanted_size, option, &stream);
     }
@@ -886,7 +877,6 @@ test "repeated cave expansion equal to single cave" {
         const parsed = try Parsed.init(&stream);
         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        print_modelf(elf_modder);
         var temp_sum: u32 = 0;
         for (0..10) |_| {
             const wanted_size = prng.random().intRangeAtMost(u8, 10, 100);
@@ -903,7 +893,6 @@ test "repeated cave expansion equal to single cave" {
         const parsed = try Parsed.init(&stream);
         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        print_modelf(elf_modder);
         const option = (try elf_modder.get_cave_option(sum, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
         try elf_modder.create_cave(sum, option, &stream);
     }
@@ -955,10 +944,7 @@ test "create cave same output Debug" {
         const parsed = try Parsed.init(&stream);
         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        std.debug.print("start:\n", .{});
-        print_modelf(elf_modder);
         const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
-        std.debug.print("option = {}\n", .{option});
         try elf_modder.create_cave(wanted_size, option, &stream);
     }
 
@@ -1011,7 +997,6 @@ test "create segment same output" {
         const parsed = try Parsed.init(&stream);
         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        print_modelf(elf_modder);
         try elf_modder.create_segment(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
     }
 
