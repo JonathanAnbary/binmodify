@@ -69,12 +69,14 @@ const Ehdr32Fields = std.meta.FieldEnum(elf.Elf32_Ehdr);
 fn off_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usize) bool {
     const offs = ranges.items(FileRangeFields.off);
     const fileszs = ranges.items(FileRangeFields.filesz);
-    return ((offs[lhs] < offs[rhs]) or
+    const aligns = ranges.items(FileRangeFields.alignment);
+    return (offs[lhs] < offs[rhs]) or
         ((offs[lhs] == offs[rhs]) and
-        (fileszs[lhs] > fileszs[rhs])) or
-        ((offs[lhs] == offs[rhs]) and
-        (fileszs[lhs] == fileszs[rhs]) and
-        (lhs > rhs)));
+        ((fileszs[lhs] > fileszs[rhs]) or
+        ((fileszs[lhs] == fileszs[rhs]) and
+        ((aligns[lhs] > aligns[rhs]) or
+        ((aligns[lhs] == aligns[rhs]) and
+        (lhs > rhs))))));
 }
 
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
@@ -439,7 +441,9 @@ fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, parse_source: any
         if (needed_size < existing_gap) break;
         needed_size -= existing_gap;
         // TODO: might be the case that I should be looking at the maximum alignment of all contained ranges here.
-        if ((aligns[range_index] != 0) and ((needed_size % aligns[range_index]) != 0)) needed_size += aligns[range_index] - (needed_size % aligns[range_index]);
+        if ((aligns[range_index] != 0) and ((needed_size % aligns[range_index]) != 0)) {
+            needed_size += aligns[range_index] - (needed_size % aligns[range_index]);
+        }
         self.adjustments[top_idx - start_top_idx] = needed_size;
     }
     var i = top_idx - start_top_idx;
@@ -452,7 +456,9 @@ fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, parse_source: any
         const final_off_idx = if ((top_index + 1) == self.top_offs.len) self.ranges.len else self.top_offs[top_index + 1];
         for (top_off_idx..final_off_idx) |off_idx| {
             const index = self.off_sort[off_idx];
+            std.debug.print("old {X}, new ", .{offs[index]});
             offs[index] += self.adjustments[i];
+            std.debug.print("{X}, align {X}\n", .{ offs[index], aligns[index] });
             try self.set_filerange_field(index, offs[index], .off, parse_source);
         }
     }
