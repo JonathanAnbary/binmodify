@@ -598,6 +598,9 @@ fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: com
     return alignment_addend;
 }
 
+// This still does not work!
+// Need to change the logic such that the top filerange containing the phdr_table and then within that top filerange extend
+// the specific filerange of the phdr_table.
 pub fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: common.FileRangeFlags, parse_source: anytype) Error!void {
     const offs = self.ranges.items(FileRangeFields.off);
     const fileszs = self.ranges.items(FileRangeFields.filesz);
@@ -620,6 +623,8 @@ pub fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: c
             break :blk try self.set_new_phdr(false, size, flags, alignment, max_off, max_addr, parse_source);
         }
     };
+    self.header.phnum += 1;
+    try self.set_ehdr_field(self.header.phnum, "phnum", parse_source);
     try parse_source.seekTo(max_off);
     try parse_source.writer().writeByteNTimes(0, size + alignment_addend);
     self.header.phnum += 1;
