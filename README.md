@@ -32,7 +32,8 @@ your_module.addImport("binmodify", binmodify.module("binmodify")); // replace th
 Testing
 =======
 
-Testing the application requires an additional dependency on keystone, and since it is not packaged via build.zig you will need cmake in order to build it.  
+Testing the application requires an additional dependency on keystone, 
+and since it is not packaged via build.zig you will need cmake in order to build it.  
 
 I suggest setting CC and CXX to zig-cc and zig-c++ respectivly and then following the instructions at [README.md](keystone/README.md).
 
@@ -44,6 +45,6 @@ Planned features
 These are the features I plan to add:
 
 - Macho support (currently only the Elf and PE formats are supported).
-- New file ranges creation (currently file ranges can be extended but not created).
+- New file ranges creation (currently file ranges can be extended but not created) (* Currently on hold due to a cave existing past the phdr_table in elf).
 - Reference fixup for patches (currently instructions with relative references may be moved by patching).
 - General api improvments (currently its kind of annoying to insert a patch if you need to know where it will be placed ahead of time).
