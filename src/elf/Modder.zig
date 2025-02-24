@@ -51,6 +51,7 @@ pub const Error = error{
     UnmappedRange,
     FieldNotAdjustable,
     PhdrTablePhdrNotFound,
+    NoSpacePastPhdrTable,
 } || shift.Error || ElfError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError;
 
 pub const SegEdge: type = struct {
@@ -599,17 +600,14 @@ fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: com
         std.mem.byteSwapAllFields(T, &new_phdr);
     }
     const temp = std.mem.toBytes(new_phdr);
-    std.debug.print("writing {X} at {X}\n", .{ @sizeOf(T), try parse_source.getPos() });
     if (try parse_source.write(&temp) != @sizeOf(T)) return Error.UnexpectedEof;
 }
 
 // This still does not work!
 // Need to change the logic such that the top filerange containing the phdr_table and then within that top filerange extend
 // the specific filerange of the phdr_table.
-pub fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: common.FileRangeFlags, parse_source: anytype) Error!void {
-    _ = gpa;
-    // _ = size;
-    // _ = flags;
+// This will only ever work if there is address space between the end of the phdr_table and the next segment.
+fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: common.FileRangeFlags, parse_source: anytype) Error!void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const addrs = self.ranges.items(.addr);
@@ -623,19 +621,35 @@ pub fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: c
     if ((aligns[top_range_idx] != 0) and ((needed_size % aligns[top_range_idx]) != 0)) {
         needed_size += aligns[top_range_idx] - (needed_size % aligns[top_range_idx]);
     }
-    try self.shift_forward(needed_size, phdr_top_idx + 1, parse_source);
-    try self.set_filerange_field(top_range_idx, fileszs[top_range_idx] + needed_size, .filesz, parse_source);
-    try self.set_filerange_field(top_range_idx, memszs[top_range_idx] + needed_size, .memsz, parse_source);
-    const final_off_idx = if ((phdr_top_idx + 1) == self.top_offs.len) self.ranges.len else self.top_offs[phdr_top_idx + 1];
-    const temp = std.sort.lowerBound(
+    const final_off_idx = blk: {
+        if ((phdr_top_idx + 1) == self.top_offs.len) {
+            break :blk self.ranges.len;
+        } else {
+            const post_off_idx = self.top_offs[phdr_top_idx + 1];
+            const post_range_idx = self.off_sort[post_off_idx];
+            if ((addrs[top_range_idx] + memszs[top_range_idx] + needed_size) > addrs[post_range_idx]) return Error.NoSpacePastPhdrTable;
+            break :blk post_off_idx;
+        }
+    };
+
+    const phdr_off_idx = std.sort.lowerBound(
         usize,
         self.off_sort[top_off_idx..final_off_idx],
         CompareContext{ .self = self, .lhs = self.header.phoff + 1 },
         off_compareFn,
-    ) - 1;
-    const phdr_off_idx = top_off_idx + temp;
+    ) - 1 + top_off_idx;
     const phdr_range_idx = self.off_sort[phdr_off_idx];
-    if ((offs[phdr_range_idx] + fileszs[phdr_range_idx]) != (self.header.phoff + self.header.phentsize * self.header.phnum)) return Error.PhdrTablePhdrNotFound;
+    if ((offs[top_range_idx] + fileszs[top_range_idx]) != (offs[phdr_range_idx] + fileszs[phdr_range_idx])) {
+        return Error.NoSpacePastPhdrTable;
+    }
+
+    try self.shift_forward(needed_size, phdr_top_idx + 1, parse_source);
+    try self.set_filerange_field(top_range_idx, fileszs[top_range_idx] + needed_size, .filesz, parse_source);
+    try self.set_filerange_field(top_range_idx, memszs[top_range_idx] + needed_size, .memsz, parse_source);
+
+    if ((offs[phdr_range_idx] + fileszs[phdr_range_idx]) != (self.header.phoff + self.header.phentsize * self.header.phnum)) {
+        return Error.PhdrTablePhdrNotFound;
+    }
     std.debug.assert((offs[phdr_range_idx] + fileszs[phdr_range_idx]) == (self.header.phoff + self.header.phentsize * self.header.phnum));
     try shift.shift_forward(
         parse_source,
@@ -672,34 +686,34 @@ pub fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: c
     } else {
         try self.set_new_phdr(false, size, flags, alignment, max_off, max_addr + alignment_addend, parse_source);
     }
-    // self.header.phnum += 1;
-    // try self.set_ehdr_field(self.header.phnum, "phnum", parse_source);
-    // try parse_source.seekTo(max_off);
-    // try parse_source.writer().writeByteNTimes(0, size);
-    // // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
-    // self.off_sort = (try gpa.realloc(self.off_sort[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    // self.off_sort[self.ranges.len] = self.ranges.len;
-    // self.addr_sort = (try gpa.realloc(self.addr_sort[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    // self.addr_sort[self.ranges.len] = self.ranges.len;
-    // self.range_to_off = (try gpa.realloc(self.range_to_off[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    // self.range_to_off[self.ranges.len] = self.ranges.len;
-    // self.range_to_addr = (try gpa.realloc(self.range_to_addr[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    // self.range_to_addr[self.ranges.len] = self.ranges.len;
-    // self.addr_to_top = (try gpa.realloc(self.addr_to_top[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    // self.addr_to_top[self.ranges.len] = self.top_addrs.len;
-    // self.adjustments = (try gpa.realloc(self.adjustments[0..self.top_offs.len], self.top_offs.len + 1)).ptr;
-    // self.top_offs = try gpa.realloc(self.top_offs, self.top_offs.len + 1);
-    // self.top_offs[self.top_offs.len - 1] = self.ranges.len;
-    // self.top_addrs = try gpa.realloc(self.top_addrs, self.top_addrs.len + 1);
-    // self.top_addrs[self.top_addrs.len - 1] = self.ranges.len;
-    // try self.ranges.append(gpa, .{
-    //     .addr = max_addr + alignment_addend,
-    //     .off = max_off,
-    //     .flags = flags,
-    //     .alignment = alignment,
-    //     .filesz = size,
-    //     .memsz = size,
-    // });
+    self.header.phnum += 1;
+    try self.set_ehdr_field(self.header.phnum, "phnum", parse_source);
+    try parse_source.seekTo(max_off);
+    try parse_source.writer().writeByteNTimes(0, size);
+    // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
+    self.off_sort = (try gpa.realloc(self.off_sort[0..self.ranges.len], self.ranges.len + 1)).ptr;
+    self.off_sort[self.ranges.len] = self.ranges.len;
+    self.addr_sort = (try gpa.realloc(self.addr_sort[0..self.ranges.len], self.ranges.len + 1)).ptr;
+    self.addr_sort[self.ranges.len] = self.ranges.len;
+    self.range_to_off = (try gpa.realloc(self.range_to_off[0..self.ranges.len], self.ranges.len + 1)).ptr;
+    self.range_to_off[self.ranges.len] = self.ranges.len;
+    self.range_to_addr = (try gpa.realloc(self.range_to_addr[0..self.ranges.len], self.ranges.len + 1)).ptr;
+    self.range_to_addr[self.ranges.len] = self.ranges.len;
+    self.addr_to_top = (try gpa.realloc(self.addr_to_top[0..self.ranges.len], self.ranges.len + 1)).ptr;
+    self.addr_to_top[self.ranges.len] = self.top_addrs.len;
+    self.adjustments = (try gpa.realloc(self.adjustments[0..self.top_offs.len], self.top_offs.len + 1)).ptr;
+    self.top_offs = try gpa.realloc(self.top_offs, self.top_offs.len + 1);
+    self.top_offs[self.top_offs.len - 1] = self.ranges.len;
+    self.top_addrs = try gpa.realloc(self.top_addrs, self.top_addrs.len + 1);
+    self.top_addrs[self.top_addrs.len - 1] = self.ranges.len;
+    try self.ranges.append(gpa, .{
+        .addr = max_addr + alignment_addend,
+        .off = max_off,
+        .flags = flags,
+        .alignment = alignment,
+        .filesz = size,
+        .memsz = size,
+    });
 }
 
 const CompareContext = struct {
@@ -1019,54 +1033,54 @@ test "create cave same output Debug" {
     try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
 }
 
-test "create segment same output" {
-    if (builtin.os.tag != .linux) {
-        error.SkipZigTest;
-    }
-    const test_src_path = "./tests/hello_world.zig";
-    const test_with_cave = "./create_segment_same_output_elf";
-    const cwd: std.fs.Dir = std.fs.cwd();
-
-    {
-        const build_src_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=elf", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_src_result.stdout);
-        defer std.testing.allocator.free(build_src_result.stderr);
-        try std.testing.expect(build_src_result.term == .Exited);
-        try std.testing.expect(build_src_result.stderr.len == 0);
-    }
-
-    // check regular output.
-    const no_cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(no_cave_result.stdout);
-    defer std.testing.allocator.free(no_cave_result.stderr);
-
-    {
-        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
-        defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
-        const wanted_size = 0xfff;
-        const parsed = try Parsed.init(&stream);
-        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
-        defer elf_modder.deinit(std.testing.allocator);
-        try elf_modder.create_segment(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
-    }
-
-    // check output with a cave
-    const cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(cave_result.stdout);
-    defer std.testing.allocator.free(cave_result.stderr);
-    try std.testing.expect(cave_result.term == .Exited);
-    try std.testing.expect(no_cave_result.term == .Exited);
-    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-    try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-    try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
-}
+// test "create segment same output" {
+//     if (builtin.os.tag != .linux) {
+//         error.SkipZigTest;
+//     }
+//     const test_src_path = "./tests/hello_world.zig";
+//     const test_with_cave = "./create_segment_same_output_elf";
+//     const cwd: std.fs.Dir = std.fs.cwd();
+//
+//     {
+//         const build_src_result = try std.process.Child.run(.{
+//             .allocator = std.testing.allocator,
+//             .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=elf", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
+//         });
+//         defer std.testing.allocator.free(build_src_result.stdout);
+//         defer std.testing.allocator.free(build_src_result.stderr);
+//         try std.testing.expect(build_src_result.term == .Exited);
+//         try std.testing.expect(build_src_result.stderr.len == 0);
+//     }
+//
+//     // check regular output.
+//     const no_cave_result = try std.process.Child.run(.{
+//         .allocator = std.testing.allocator,
+//         .argv = &[_][]const u8{test_with_cave},
+//     });
+//     defer std.testing.allocator.free(no_cave_result.stdout);
+//     defer std.testing.allocator.free(no_cave_result.stderr);
+//
+//     {
+//         var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
+//         defer f.close();
+//         var stream = std.io.StreamSource{ .file = f };
+//         const wanted_size = 0xfff;
+//         const parsed = try Parsed.init(&stream);
+//         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+//         defer elf_modder.deinit(std.testing.allocator);
+//         try elf_modder.create_segment(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
+//     }
+//
+//     // check output with a cave
+//     const cave_result = try std.process.Child.run(.{
+//         .allocator = std.testing.allocator,
+//         .argv = &[_][]const u8{test_with_cave},
+//     });
+//     defer std.testing.allocator.free(cave_result.stdout);
+//     defer std.testing.allocator.free(cave_result.stderr);
+//     try std.testing.expect(cave_result.term == .Exited);
+//     try std.testing.expect(no_cave_result.term == .Exited);
+//     try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
+//     try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
+//     try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+// }

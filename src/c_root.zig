@@ -92,6 +92,7 @@ pub const Result: type = enum(u8) {
     UnmappedRange,
     FieldNotAdjustable,
     PhdrTablePhdrNotFound,
+    NoSpacePastPhdrTable,
 };
 
 pub fn err_to_res(e: patch.Error) Result {
@@ -174,6 +175,7 @@ pub fn err_to_res(e: patch.Error) Result {
         patch.Error.UnmappedRange => .UnmappedRange,
         patch.Error.FieldNotAdjustable => .FieldNotAdjustable,
         patch.Error.PhdrTablePhdrNotFound => .PhdrTablePhdrNotFound,
+        patch.Error.NoSpacePastPhdrTable => .NoSpacePastPhdrTable,
     };
 }
 
