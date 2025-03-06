@@ -62,7 +62,7 @@ fn min_insn_size(handle: capstone.csh, size: u64, code: []const u8) u64 {
     return address;
 }
 
-pub fn AdjustablePatcher(T: type, comptime maybe_hook_fixup: ?fn (addr: u64, cave: T.EdgeType, size: u64) void) type {
+pub fn AdjustablePatcher(T: type, comptime maybe_hook_fixup: ?fn (addr: u64, start: u64, size: u64) void) type {
     return struct {
         modder: T,
         ctl_assembler: ctl_asm.CtlFlowAssembler,
@@ -135,7 +135,7 @@ pub fn AdjustablePatcher(T: type, comptime maybe_hook_fixup: ?fn (addr: u64, cav
             try stream.seekTo(cave_off + patch.len + insn_to_move_siz);
             if (try stream.write(buff[0..cave_to_patch_size]) != cave_to_patch_size) return Error.UnexpectedEof;
             if (maybe_hook_fixup) |hook_fixup| {
-                hook_fixup(addr, cave_option, cave_size);
+                hook_fixup(addr, cave_addr, cave_size);
             }
         }
     };
