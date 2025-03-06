@@ -50,10 +50,7 @@ fn from_capstone_err(err: capstone.cs_err) CSError!void {
     };
 }
 
-pub const Error = error{
-    IllogicalInsnToMove,
-    IllogicalJmpSize,
-} || CoffModder.Error || ElfModder.Error || CSError || arch.Error;
+pub const Error = CoffModder.Error || ElfModder.Error || CSError || arch.Error;
 
 fn min_insn_size(handle: capstone.csh, size: u64, code: []const u8) u64 {
     const insn = capstone.cs_malloc(handle);
@@ -65,7 +62,7 @@ fn min_insn_size(handle: capstone.csh, size: u64, code: []const u8) u64 {
     return address;
 }
 
-pub fn Patcher(T: type) type {
+pub fn AdjustablePatcher(T: type, comptime maybe_hook_fixup: ?fn (addr: u64, cave: T.EdgeType, size: u64) void) type {
     return struct {
         modder: T,
         ctl_assembler: ctl_asm.CtlFlowAssembler,
@@ -110,8 +107,8 @@ pub fn Patcher(T: type) type {
             const max = try stream.read(&buff);
             const ctl_trasnfer_size = (ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.ctl_assembler.arch) orelse return Error.ArchNotSupported).len;
             const insn_to_move_siz = min_insn_size(self.csh, ctl_trasnfer_size, buff[0..max]);
+            std.debug.assert(insn_to_move_siz < buff.len);
             const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
-            if (insn_to_move_siz >= buff.len) return Error.IllogicalInsnToMove;
             const cave_option = (try self.modder.get_cave_option(cave_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
             // std.debug.print("\ncave_option = {}\n", .{cave_option});
             try self.modder.create_cave(cave_size, cave_option, stream);
@@ -120,6 +117,7 @@ pub fn Patcher(T: type) type {
             //         std.debug.print("{X} - {X} - {X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_size, sechdr.pointer_to_raw_data, sechdr.size_of_raw_data });
             //     }
             // }
+
             const off_after_patch = try self.modder.addr_to_off(addr);
             // TODO: mismatch between filesz and memsz is gonna screw me over.
             const cave_off = self.modder.cave_to_off(cave_option, cave_size);
@@ -129,15 +127,22 @@ pub fn Patcher(T: type) type {
             try stream.seekTo(cave_off + patch.len);
             if (try stream.write(buff[0..insn_to_move_siz]) != insn_to_move_siz) return Error.UnexpectedEof;
             const patch_to_cave_size = try self.ctl_assembler.assemble_ctl_transfer(addr, cave_addr, &buff);
-            if (patch_to_cave_size != ctl_trasnfer_size) return Error.IllogicalJmpSize;
+            std.debug.assert(patch_to_cave_size == ctl_trasnfer_size);
             try stream.seekTo(off_after_patch);
             if (try stream.write(buff[0..patch_to_cave_size]) != patch_to_cave_size) return Error.UnexpectedEof;
             const cave_to_patch_size = try self.ctl_assembler.assemble_ctl_transfer(cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
-            if (cave_to_patch_size != ctl_trasnfer_size) return Error.IllogicalJmpSize;
+            std.debug.assert(cave_to_patch_size == ctl_trasnfer_size);
             try stream.seekTo(cave_off + patch.len + insn_to_move_siz);
             if (try stream.write(buff[0..cave_to_patch_size]) != cave_to_patch_size) return Error.UnexpectedEof;
+            if (maybe_hook_fixup) |hook_fixup| {
+                hook_fixup(addr, cave_option, cave_size);
+            }
         }
     };
+}
+
+pub fn Patcher(T: type) type {
+    return AdjustablePatcher(T, null);
 }
 
 test "elf nop patch no difference" {

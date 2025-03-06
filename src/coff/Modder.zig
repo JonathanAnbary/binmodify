@@ -33,6 +33,8 @@ pub const SecEdge: type = struct {
     is_end: bool,
 };
 
+pub const EdgeType = SecEdge;
+
 const SectionHeaderFields = std.meta.FieldEnum(std.coff.SectionHeader);
 
 const PartialHeader = struct {

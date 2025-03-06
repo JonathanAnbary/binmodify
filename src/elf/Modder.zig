@@ -59,6 +59,8 @@ pub const SegEdge: type = struct {
     is_end: bool,
 };
 
+pub const EdgeType = SegEdge;
+
 const Phdr64Fields = std.meta.FieldEnum(elf.Elf64_Phdr);
 const Phdr32Fields = std.meta.FieldEnum(elf.Elf32_Phdr);
 
