@@ -83,26 +83,21 @@ pub fn build(b: *std.Build) void {
         "Skip tests that do not match any of the specified filters",
     ) orelse &.{};
 
-    const unit_tests_mod = b.createModule(.{
-        .root_source_file = b.path("src/tests.zig"),
+    const all_tests = b.addTest(.{
+        .root_source_file = b.path("src/c_root.zig"),
         .target = target,
         .optimize = optimize,
         .pic = pic,
         .strip = strip,
         .link_libc = true,
         .link_libcpp = true,
-    });
-    unit_tests_mod.addImport("binmodify", lib_mod);
-    unit_tests_mod.linkLibrary(capstone_dependency.artifact("capstone"));
-    unit_tests_mod.addObjectFile(b.path("keystone/build/llvm/lib64/libkeystone.a"));
-    unit_tests_mod.addIncludePath(b.path("keystone/include/keystone/"));
-
-    const unit_tests = b.addTest(.{
-        .root_module = unit_tests_mod,
         .filters = test_filters,
     });
+    all_tests.linkLibrary(capstone_dependency.artifact("capstone"));
+    all_tests.addObjectFile(b.path("keystone/build/llvm/lib64/libkeystone.a"));
+    all_tests.addIncludePath(b.path("keystone/include/keystone/"));
 
-    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const run_unit_tests = b.addRunArtifact(all_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);

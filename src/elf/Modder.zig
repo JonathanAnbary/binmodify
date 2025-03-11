@@ -76,11 +76,11 @@ fn off_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usize
     const aligns = ranges.items(.alignment);
     return (offs[lhs] < offs[rhs]) or
         ((offs[lhs] == offs[rhs]) and
-        ((fileszs[lhs] > fileszs[rhs]) or
-        ((fileszs[lhs] == fileszs[rhs]) and
-        ((aligns[lhs] > aligns[rhs]) or
-        ((aligns[lhs] == aligns[rhs]) and
-        (lhs > rhs))))));
+            ((fileszs[lhs] > fileszs[rhs]) or
+                ((fileszs[lhs] == fileszs[rhs]) and
+                    ((aligns[lhs] > aligns[rhs]) or
+                        ((aligns[lhs] == aligns[rhs]) and
+                            (lhs > rhs))))));
 }
 
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
@@ -89,7 +89,7 @@ fn addr_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usiz
     const memszs = ranges.items(.memsz);
     return ((addrs[lhs] < addrs[rhs]) or
         ((addrs[lhs] == addrs[rhs]) and
-        (memszs[lhs] > memszs[rhs])));
+            (memszs[lhs] > memszs[rhs])));
 }
 
 fn sec_offset_lessThanFn(shdrs: *std.MultiArrayList(elf.Elf64_Shdr), lhs: usize, rhs: usize) bool {

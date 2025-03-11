@@ -1,15 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const binmodify = @import("binmodify");
-
-pub const patch = binmodify.patch;
-pub const ElfModder = binmodify.ElfModder;
-pub const ElfParsed = binmodify.ElfParsed;
-pub const CoffModder = binmodify.CoffModder;
-pub const CoffParsed = binmodify.CoffParsed;
-pub const arch = binmodify.arch;
-pub const common = binmodify.common;
+pub const patch = @import("patch.zig");
+pub const ElfModder = @import("elf/Modder.zig");
+pub const ElfParsed = @import("elf/Parsed.zig");
+pub const CoffModder = @import("coff/Modder.zig");
+pub const CoffParsed = @import("coff/Parsed.zig");
+pub const arch = @import("arch.zig");
+pub const common = @import("common.zig");
 
 pub const Disasm = @import("capstone.zig").Disasm;
 
