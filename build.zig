@@ -28,8 +28,6 @@ pub fn build(b: *std.Build) void {
         .pic = pic,
     });
 
-    lib_mod.linkLibrary(capstone_dependency.artifact("capstone"));
-
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -38,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
     });
 
+    exe_mod.linkLibrary(capstone_dependency.artifact("capstone"));
     exe_mod.addImport("binmodify", lib_mod);
 
     const exe = b.addExecutable(.{
@@ -55,6 +54,7 @@ pub fn build(b: *std.Build) void {
         .pic = pic,
     });
 
+    clib_mod.addImport("binmodify", lib_mod);
     clib_mod.linkLibrary(capstone_dependency.artifact("capstone"));
 
     const clib = std.Build.Step.Compile.create(b, .{
@@ -83,19 +83,24 @@ pub fn build(b: *std.Build) void {
         "Skip tests that do not match any of the specified filters",
     ) orelse &.{};
 
-    const unit_tests = b.addTest(.{
+    const unit_tests_mod = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
-        .filters = test_filters,
         .pic = pic,
         .strip = strip,
+        .link_libc = true,
+        .link_libcpp = true,
     });
-    unit_tests.linkLibrary(capstone_dependency.artifact("capstone"));
-    unit_tests.addObjectFile(b.path("keystone/build/llvm/lib64/libkeystone.a"));
-    unit_tests.addIncludePath(b.path("keystone/include/keystone/"));
-    unit_tests.linkLibC();
-    unit_tests.linkLibCpp();
+    unit_tests_mod.addImport("binmodify", lib_mod);
+    unit_tests_mod.linkLibrary(capstone_dependency.artifact("capstone"));
+    unit_tests_mod.addObjectFile(b.path("keystone/build/llvm/lib64/libkeystone.a"));
+    unit_tests_mod.addIncludePath(b.path("keystone/include/keystone/"));
+
+    const unit_tests = b.addTest(.{
+        .root_module = unit_tests_mod,
+        .filters = test_filters,
+    });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
 

@@ -26,7 +26,7 @@ pub const Error = error{
     IntersectingFileRanges,
     UnexpectedEof,
     VirtualSizeLessThenFileSize,
-} || std.coff.CoffError;
+} || std.coff.CoffError || std.mem.Allocator.Error;
 
 pub const SecEdge: type = struct {
     sec_idx: usize,

@@ -1,12 +1,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const patch = @import("patch.zig");
-pub const ElfModder = @import("elf/Modder.zig");
-pub const ElfParsed = @import("elf/Parsed.zig");
-pub const CoffModder = @import("coff/Modder.zig");
-pub const CoffParsed = @import("coff/Parsed.zig");
-pub const common = @import("common.zig");
+const binmodify = @import("binmodify");
+
+pub const patch = binmodify.patch;
+pub const ElfModder = binmodify.ElfModder;
+pub const ElfParsed = binmodify.ElfParsed;
+pub const CoffModder = binmodify.CoffModder;
+pub const CoffParsed = binmodify.CoffParsed;
+pub const arch = binmodify.arch;
+pub const common = binmodify.common;
+
+pub const Disasm = @import("capstone.zig").Disasm;
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const alloc = gpa.allocator();
@@ -95,126 +100,136 @@ pub const Result: type = enum(u8) {
     NoSpacePastPhdrTable,
 };
 
-pub fn err_to_res(e: patch.Error) Result {
+const AllError = ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error;
+
+pub fn err_to_res(e: AllError) Result {
     return switch (e) {
-        patch.Error.BrokenPipe => .BrokenPipe,
-        patch.Error.ConnectionResetByPeer => .ConnectionResetByPeer,
-        patch.Error.ConnectionTimedOut => .ConnectionTimedOut,
-        patch.Error.NotOpenForReading => .NotOpenForReading,
-        patch.Error.SocketNotConnected => .SocketNotConnected,
-        patch.Error.WouldBlock => .WouldBlock,
-        patch.Error.Canceled => .Canceled,
-        patch.Error.AccessDenied => .AccessDenied,
-        patch.Error.ProcessNotFound => .ProcessNotFound,
-        patch.Error.LockViolation => .LockViolation,
-        patch.Error.Unexpected => .Unexpected,
-        patch.Error.NoSpaceLeft => .NoSpaceLeft,
-        patch.Error.DiskQuota => .DiskQuota,
-        patch.Error.FileTooBig => .FileTooBig,
-        patch.Error.DeviceBusy => .DeviceBusy,
-        patch.Error.InvalidArgument => .InvalidArgument,
-        patch.Error.NotOpenForWriting => .NotOpenForWriting,
-        patch.Error.NoDevice => .NoDevice,
-        patch.Error.Unseekable => .Unseekable,
-        patch.Error.UNKNOWN_CS_ERR => .UNKNOWN_CS_ERR,
-        patch.Error.ArchNotSupported => .ArchNotSupported,
-        patch.Error.ModeNotSupported => .ModeNotSupported,
-        patch.Error.ArchEndianMismatch => .ArchEndianMismatch,
-        patch.Error.AddrNotMapped => .AddrNotMapped,
-        patch.Error.NoMatchingOffset => .NoMatchingOffset,
-        patch.Error.OffsetNotLoaded => .OffsetNotLoaded,
-        patch.Error.NoCaveOption => .NoCaveOption,
-        patch.Error.InvalidPEMagic => .InvalidPEMagic,
-        patch.Error.InvalidPEHeader => .InvalidPEHeader,
-        patch.Error.InvalidMachine => .InvalidMachine,
-        patch.Error.MissingPEHeader => .MissingPEHeader,
-        patch.Error.MissingCoffSection => .MissingCoffSection,
-        patch.Error.MissingStringTable => .MissingStringTable,
-        patch.Error.EdgeNotFound => .EdgeNotFound,
-        patch.Error.InvalidEdge => .InvalidEdge,
-        patch.Error.InvalidHeader => .InvalidHeader,
-        patch.Error.InvalidElfMagic => .InvalidElfMagic,
-        patch.Error.InvalidElfVersion => .InvalidElfVersion,
-        patch.Error.InvalidElfEndian => .InvalidElfEndian,
-        patch.Error.InvalidElfClass => .InvalidElfClass,
-        patch.Error.EndOfStream => .EndOfStream,
-        patch.Error.OutOfMemory => .OutOfMemory,
-        patch.Error.InputOutput => .InputOutput,
-        patch.Error.SystemResources => .SystemResources,
-        patch.Error.IsDir => .IsDir,
-        patch.Error.OperationAborted => .OperationAborted,
-        patch.Error.CS_ERR_MEM => .CS_ERR_MEM,
-        patch.Error.CS_ERR_ARCH => .CS_ERR_ARCH,
-        patch.Error.CS_ERR_HANDLE => .CS_ERR_HANDLE,
-        patch.Error.CS_ERR_CSH => .CS_ERR_CSH,
-        patch.Error.CS_ERR_MODE => .CS_ERR_MODE,
-        patch.Error.CS_ERR_OPTION => .CS_ERR_OPTION,
-        patch.Error.CS_ERR_DETAIL => .CS_ERR_DETAIL,
-        patch.Error.CS_ERR_MEMSETUP => .CS_ERR_MEMSETUP,
-        patch.Error.CS_ERR_VERSION => .CS_ERR_VERSION,
-        patch.Error.CS_ERR_DIET => .CS_ERR_DIET,
-        patch.Error.CS_ERR_SKIPDATA => .CS_ERR_SKIPDATA,
-        patch.Error.CS_ERR_X86_ATT => .CS_ERR_X86_ATT,
-        patch.Error.CS_ERR_X86_INTEL => .CS_ERR_X86_INTEL,
-        patch.Error.CS_ERR_X86_MASM => .CS_ERR_X86_MASM,
-        patch.Error.ArchNotEndianable => .ArchNotEndianable,
-        patch.Error.ArchModeMismatch => .ArchModeMismatch,
-        patch.Error.NoFreeSpace => .NoFreeSpace,
-        patch.Error.InvalidOptionalHeaderMagic => .InvalidOptionalHeaderMagic,
-        patch.Error.IntersectingFileRanges => .IntersectingFileRanges,
-        patch.Error.IntersectingMemoryRanges => .IntersectingMemoryRanges,
-        patch.Error.UnexpectedEof => .UnexpectedEof,
-        patch.Error.VirtualSizeLessThenFileSize => .VirtualSizeLessThenFileSize,
-        patch.Error.InvalidElfRanges => .InvalidElfRanges,
-        patch.Error.CantExpandPhdr => .CantExpandPhdr,
-        patch.Error.FileszBiggerThenMemsz => .FileszBiggerThenMemsz,
-        patch.Error.StartAfterEnd => .StartAfterEnd,
-        patch.Error.OutOfBoundField => .OutOfBoundField,
-        patch.Error.UnmappedRange => .UnmappedRange,
-        patch.Error.FieldNotAdjustable => .FieldNotAdjustable,
-        patch.Error.PhdrTablePhdrNotFound => .PhdrTablePhdrNotFound,
-        patch.Error.NoSpacePastPhdrTable => .NoSpacePastPhdrTable,
+        AllError.BrokenPipe => .BrokenPipe,
+        AllError.ConnectionResetByPeer => .ConnectionResetByPeer,
+        AllError.ConnectionTimedOut => .ConnectionTimedOut,
+        AllError.NotOpenForReading => .NotOpenForReading,
+        AllError.SocketNotConnected => .SocketNotConnected,
+        AllError.WouldBlock => .WouldBlock,
+        AllError.Canceled => .Canceled,
+        AllError.AccessDenied => .AccessDenied,
+        AllError.ProcessNotFound => .ProcessNotFound,
+        AllError.LockViolation => .LockViolation,
+        AllError.Unexpected => .Unexpected,
+        AllError.NoSpaceLeft => .NoSpaceLeft,
+        AllError.DiskQuota => .DiskQuota,
+        AllError.FileTooBig => .FileTooBig,
+        AllError.DeviceBusy => .DeviceBusy,
+        AllError.InvalidArgument => .InvalidArgument,
+        AllError.NotOpenForWriting => .NotOpenForWriting,
+        AllError.NoDevice => .NoDevice,
+        AllError.Unseekable => .Unseekable,
+        AllError.UNKNOWN_CS_ERR => .UNKNOWN_CS_ERR,
+        AllError.ArchNotSupported => .ArchNotSupported,
+        AllError.ModeNotSupported => .ModeNotSupported,
+        AllError.ArchEndianMismatch => .ArchEndianMismatch,
+        AllError.AddrNotMapped => .AddrNotMapped,
+        AllError.NoMatchingOffset => .NoMatchingOffset,
+        AllError.OffsetNotLoaded => .OffsetNotLoaded,
+        AllError.NoCaveOption => .NoCaveOption,
+        AllError.InvalidPEMagic => .InvalidPEMagic,
+        AllError.InvalidPEHeader => .InvalidPEHeader,
+        AllError.InvalidMachine => .InvalidMachine,
+        AllError.MissingPEHeader => .MissingPEHeader,
+        AllError.MissingCoffSection => .MissingCoffSection,
+        AllError.MissingStringTable => .MissingStringTable,
+        AllError.EdgeNotFound => .EdgeNotFound,
+        AllError.InvalidEdge => .InvalidEdge,
+        AllError.InvalidHeader => .InvalidHeader,
+        AllError.InvalidElfMagic => .InvalidElfMagic,
+        AllError.InvalidElfVersion => .InvalidElfVersion,
+        AllError.InvalidElfEndian => .InvalidElfEndian,
+        AllError.InvalidElfClass => .InvalidElfClass,
+        AllError.EndOfStream => .EndOfStream,
+        AllError.OutOfMemory => .OutOfMemory,
+        AllError.InputOutput => .InputOutput,
+        AllError.SystemResources => .SystemResources,
+        AllError.IsDir => .IsDir,
+        AllError.OperationAborted => .OperationAborted,
+        AllError.CS_ERR_MEM => .CS_ERR_MEM,
+        AllError.CS_ERR_ARCH => .CS_ERR_ARCH,
+        AllError.CS_ERR_HANDLE => .CS_ERR_HANDLE,
+        AllError.CS_ERR_CSH => .CS_ERR_CSH,
+        AllError.CS_ERR_MODE => .CS_ERR_MODE,
+        AllError.CS_ERR_OPTION => .CS_ERR_OPTION,
+        AllError.CS_ERR_DETAIL => .CS_ERR_DETAIL,
+        AllError.CS_ERR_MEMSETUP => .CS_ERR_MEMSETUP,
+        AllError.CS_ERR_VERSION => .CS_ERR_VERSION,
+        AllError.CS_ERR_DIET => .CS_ERR_DIET,
+        AllError.CS_ERR_SKIPDATA => .CS_ERR_SKIPDATA,
+        AllError.CS_ERR_X86_ATT => .CS_ERR_X86_ATT,
+        AllError.CS_ERR_X86_INTEL => .CS_ERR_X86_INTEL,
+        AllError.CS_ERR_X86_MASM => .CS_ERR_X86_MASM,
+        AllError.ArchNotEndianable => .ArchNotEndianable,
+        AllError.ArchModeMismatch => .ArchModeMismatch,
+        AllError.NoFreeSpace => .NoFreeSpace,
+        AllError.InvalidOptionalHeaderMagic => .InvalidOptionalHeaderMagic,
+        AllError.IntersectingFileRanges => .IntersectingFileRanges,
+        AllError.IntersectingMemoryRanges => .IntersectingMemoryRanges,
+        AllError.UnexpectedEof => .UnexpectedEof,
+        AllError.VirtualSizeLessThenFileSize => .VirtualSizeLessThenFileSize,
+        AllError.InvalidElfRanges => .InvalidElfRanges,
+        AllError.CantExpandPhdr => .CantExpandPhdr,
+        AllError.FileszBiggerThenMemsz => .FileszBiggerThenMemsz,
+        AllError.StartAfterEnd => .StartAfterEnd,
+        AllError.OutOfBoundField => .OutOfBoundField,
+        AllError.UnmappedRange => .UnmappedRange,
+        AllError.FieldNotAdjustable => .FieldNotAdjustable,
+        AllError.PhdrTablePhdrNotFound => .PhdrTablePhdrNotFound,
+        AllError.NoSpacePastPhdrTable => .NoSpacePastPhdrTable,
     };
 }
 
-fn inner_ElfPatcher_init(out: *patch.Patcher(ElfModder), stream: *std.io.StreamSource) !void {
+fn inner_ElfPatcher_init(out: *patch.Patcher(ElfModder, Disasm), stream: *std.io.StreamSource) !void {
     const parsed = try ElfParsed.init(stream);
-    out.* = try patch.Patcher(ElfModder).init(alloc, stream, &parsed);
+    out.* = try .init(alloc, stream, &parsed);
 }
 
-pub export fn ElfPatcher_init(out: *patch.Patcher(ElfModder), stream: *std.io.StreamSource) Result {
+pub export fn ElfPatcher_init(out: *patch.Patcher(ElfModder, Disasm), stream: *std.io.StreamSource) Result {
     inner_ElfPatcher_init(out, stream) catch |err| return err_to_res(err);
     return .Ok;
 }
 
-pub export fn ElfPatcher_deinit(patcher: *patch.Patcher(ElfModder)) void {
+pub export fn ElfPatcher_deinit(patcher: *patch.Patcher(ElfModder, Disasm)) void {
     patcher.deinit(alloc);
 }
 
-pub export fn ElfPatcher_pure_patch(patcher: *patch.Patcher(ElfModder), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource) Result {
-    patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+pub export fn ElfPatcher_pure_patch(patcher: *patch.Patcher(ElfModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource, maybe_patch_info: ?*patch.PatchInfo) Result {
+    if (maybe_patch_info) |patch_info| {
+        patch_info.* = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+    } else {
+        _ = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+    }
     return .Ok;
 }
 
-fn inner_CoffPatcher_init(out: *patch.Patcher(CoffModder), stream: *std.io.StreamSource) !void {
+fn inner_CoffPatcher_init(out: *patch.Patcher(CoffModder, Disasm), stream: *std.io.StreamSource) !void {
     const data = try alloc.alloc(u8, try stream.getEndPos());
     defer alloc.free(data);
     const coff = try std.coff.Coff.init(data, false);
     const parsed = CoffParsed.init(coff);
-    out.* = try patch.Patcher(CoffModder).init(alloc, stream, &parsed);
+    out.* = try .init(alloc, stream, &parsed);
 }
 
-pub export fn CoffPatcher_init(out: *patch.Patcher(CoffModder), stream: *std.io.StreamSource) Result {
+pub export fn CoffPatcher_init(out: *patch.Patcher(CoffModder, Disasm), stream: *std.io.StreamSource) Result {
     inner_CoffPatcher_init(out, stream) catch |err| return err_to_res(err);
     return .Ok;
 }
 
-pub export fn CoffPatcher_deinit(patcher: *patch.Patcher(CoffModder)) void {
+pub export fn CoffPatcher_deinit(patcher: *patch.Patcher(CoffModder, Disasm)) void {
     patcher.deinit(alloc);
 }
 
-pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(CoffModder), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource) Result {
-    patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(CoffModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource, maybe_patch_info: ?*patch.PatchInfo) Result {
+    if (maybe_patch_info) |patch_info| {
+        patch_info.* = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+    } else {
+        _ = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+    }
     return .Ok;
 }
 
@@ -250,11 +265,11 @@ test "c patcher api elf" {
         defer f.close();
         var stream = std.io.StreamSource{ .file = f };
         const patch_data: [*:0]const u8 = @ptrCast(&([_]u8{0x90} ** 0x900 ++ [_]u8{0x00})); // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
-        var patcher: patch.Patcher(ElfModder) = undefined;
+        var patcher: patch.Patcher(ElfModder, Disasm) = undefined;
         const res = ElfPatcher_init(&patcher, &stream);
         try std.testing.expectEqual(.Ok, res);
         defer ElfPatcher_deinit(&patcher);
-        try std.testing.expectEqual(.Ok, ElfPatcher_pure_patch(&patcher, 0x1001B43, patch_data, &stream));
+        try std.testing.expectEqual(.Ok, ElfPatcher_pure_patch(&patcher, 0x1001B43, patch_data, &stream, null));
     }
 
     // check output with a cave

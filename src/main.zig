@@ -9,6 +9,8 @@ const CoffParsed = binmodify.CoffParsed;
 const arch = binmodify.arch;
 const patch = binmodify.patch;
 
+const capstone = @import("capstone.zig");
+
 fn arg_err(out: std.io.AnyWriter) !void {
     try out.print("binmodify <file-to-patch> <patch-addr> <patch>", .{});
 }
@@ -46,28 +48,27 @@ pub fn main() !void {
     const wanted_patch = try std.fmt.hexToBytes(patch_buf, wanted_patch_hex);
     var f = try std.fs.cwd().openFile(to_patch, .{ .mode = .read_write });
     defer f.close();
-    var stream = std.io.StreamSource{ .file = f };
 
     var buf: [4]u8 = undefined;
-    if ((try stream.read(buf[0..MZ.len])) != MZ.len) return Error.FileTypeNotSupported;
+    if ((try f.read(buf[0..MZ.len])) != MZ.len) return Error.FileTypeNotSupported;
     if (std.mem.eql(u8, buf[0..MZ.len], MZ)) {
-        const data = try alloc.alloc(u8, try stream.getEndPos());
+        const data = try alloc.alloc(u8, try f.getEndPos());
         defer alloc.free(data);
         const coff = try std.coff.Coff.init(data, false);
         const parsed = CoffParsed.init(coff);
-        var patcher = try patch.Patcher(CoffModder).init(alloc, &stream, &parsed);
+        var patcher = try patch.Patcher(CoffModder, capstone.Disasm).init(alloc, &f, &parsed);
         defer patcher.deinit(alloc);
         std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
-        try patcher.pure_patch(patch_addr, wanted_patch, &stream);
+        _ = try patcher.pure_patch(patch_addr, wanted_patch, &f);
         std.debug.print("Patch done\n", .{});
     } else {
-        if ((try stream.read(buf[MZ.len..ELF.len])) != (ELF.len - MZ.len)) return Error.FileTypeNotSupported;
+        if ((try f.read(buf[MZ.len..ELF.len])) != (ELF.len - MZ.len)) return Error.FileTypeNotSupported;
         if (std.mem.eql(u8, buf[0..ELF.len], ELF)) {
-            const parsed = try ElfParsed.init(&stream);
-            var patcher = try patch.Patcher(ElfModder).init(alloc, &stream, &parsed);
+            const parsed = try ElfParsed.init(&f);
+            var patcher = try patch.Patcher(ElfModder, capstone.Disasm).init(alloc, &f, &parsed);
             defer patcher.deinit(alloc);
             std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
-            try patcher.pure_patch(patch_addr, wanted_patch, &stream);
+            _ = try patcher.pure_patch(patch_addr, wanted_patch, &f);
             std.debug.print("Patch done\n", .{});
         }
     }
