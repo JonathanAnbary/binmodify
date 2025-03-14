@@ -16,6 +16,8 @@ pub fn init(stream: anytype) !Self {
 pub fn get_arch(self: *const Self) !arch.Arch {
     return switch (self.header.machine) {
         .X86_64 => .X86,
+        .ARM => .ARM,
+        .AARCH64 => .ARM64,
         else => arch.Error.ArchNotSupported,
     };
 }
@@ -23,6 +25,8 @@ pub fn get_arch(self: *const Self) !arch.Arch {
 pub fn get_mode(self: *const Self) !arch.Mode {
     return switch (self.header.machine) {
         .X86_64 => if (self.header.is_64) .MODE_64 else .MODE_32,
+        .ARM => .ARM,
+        .AARCH64 => .ARM64,
         else => arch.Error.ArchNotSupported,
     };
 }

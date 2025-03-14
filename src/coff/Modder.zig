@@ -275,7 +275,7 @@ test "create_cave same output" {
     // check regular output.
     const no_cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "wine", test_with_cave },
+        .argv = &[_][]const u8{test_with_cave},
     });
     defer std.testing.allocator.free(no_cave_result.stdout);
     defer std.testing.allocator.free(no_cave_result.stderr);
@@ -299,7 +299,7 @@ test "create_cave same output" {
     // check output with a cave
     const cave_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "wine", test_with_cave },
+        .argv = &[_][]const u8{test_with_cave},
     });
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);

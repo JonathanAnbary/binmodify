@@ -55,10 +55,13 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             const off_before_patch = try self.modder.addr_to_off(addr);
             try stream.seekTo(off_before_patch);
             const max = try stream.read(&buff);
-            const ctl_trasnfer_size = (ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.ctl_assembler.arch) orelse return Error.ArchNotSupported).len;
-            const insn_to_move_siz = self.disasm.min_insn_size(ctl_trasnfer_size, buff[0..max], addr);
+            const ctl_transfer_size = @max(
+                (try ctl_asm.CtlFlowAssembler.arch_to_ctl_flow(self.ctl_assembler.arch, true)).len,
+                (try ctl_asm.CtlFlowAssembler.arch_to_ctl_flow(self.ctl_assembler.arch, false)).len,
+            );
+            const insn_to_move_siz = self.disasm.min_insn_size(ctl_transfer_size, buff[0..max], addr);
             std.debug.assert(insn_to_move_siz < buff.len);
-            const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
+            const cave_size = patch.len + insn_to_move_siz + ctl_transfer_size;
             const cave_option = (try self.modder.get_cave_option(cave_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
             // std.debug.print("\ncave_option = {}\n", .{cave_option});
             try self.modder.create_cave(cave_size, cave_option, stream);
@@ -77,11 +80,11 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             try stream.seekTo(cave_off + patch.len);
             if (try stream.write(buff[0..insn_to_move_siz]) != insn_to_move_siz) return Error.UnexpectedEof;
             const patch_to_cave_size = try self.ctl_assembler.assemble_ctl_transfer(addr, cave_addr, &buff);
-            std.debug.assert(patch_to_cave_size == ctl_trasnfer_size);
+            std.debug.assert(patch_to_cave_size == ctl_transfer_size);
             try stream.seekTo(off_after_patch);
             if (try stream.write(buff[0..patch_to_cave_size]) != patch_to_cave_size) return Error.UnexpectedEof;
             const cave_to_patch_size = try self.ctl_assembler.assemble_ctl_transfer(cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
-            std.debug.assert(cave_to_patch_size == ctl_trasnfer_size);
+            std.debug.assert(cave_to_patch_size == ctl_transfer_size);
             try stream.seekTo(cave_off + patch.len + insn_to_move_siz);
             if (try stream.write(buff[0..cave_to_patch_size]) != cave_to_patch_size) return Error.UnexpectedEof;
             return .{ .cave_addr = cave_addr, .cave_size = cave_size };
@@ -102,51 +105,69 @@ test "elf nop patch no difference" {
         return error.SkipZigTest;
     }
     const test_src_path = "./tests/hello_world.zig";
-    const test_with_patch_path = "./elf_nop_patch_no_difference";
+    const test_with_patch_prefix = "./elf_nop_patch_no_difference";
     const cwd: std.fs.Dir = std.fs.cwd();
+    const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
+    const targets = &.{ "x86_64-linux", "aarch64-linux" };
+    const qemus = &.{ "qemu-x86_64", "qemu-aarch64" };
 
-    {
-        const build_src_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=elf", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_src_result.stdout);
-        defer std.testing.allocator.free(build_src_result.stderr);
-        try std.testing.expect(build_src_result.term == .Exited);
-        try std.testing.expect(build_src_result.stderr.len == 0);
+    var maybe_no_patch_result: ?std.process.Child.RunResult = null;
+    defer {
+        if (maybe_no_patch_result) |no_patch_result| {
+            std.testing.allocator.free(no_patch_result.stdout);
+            std.testing.allocator.free(no_patch_result.stderr);
+        }
     }
 
-    // check regular output.
-    const no_patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
-    });
-    defer std.testing.allocator.free(no_patch_result.stdout);
-    defer std.testing.allocator.free(no_patch_result.stderr);
+    inline for (optimzes) |optimize| {
+        inline for (targets, qemus) |target, qemu| {
+            const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
 
-    {
-        var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
-        defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
-        const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
-        const parsed = try ElfParsed.init(&stream);
-        var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
-        defer patcher.deinit(std.testing.allocator);
-        _ = try patcher.pure_patch(0x1001B34, &patch, &stream);
+            {
+                const build_src_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=elf", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+                });
+                defer std.testing.allocator.free(build_src_result.stdout);
+                defer std.testing.allocator.free(build_src_result.stderr);
+                try std.testing.expect(build_src_result.term == .Exited);
+                try std.testing.expect(build_src_result.stderr.len == 0);
+            }
+
+            if (maybe_no_patch_result == null) {
+                // check regular output.
+                maybe_no_patch_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{test_with_patch_path},
+                });
+            }
+            const no_patch_result = maybe_no_patch_result.?;
+
+            {
+                var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
+                defer f.close();
+                var stream = std.io.StreamSource{ .file = f };
+                const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
+                const parsed = try ElfParsed.init(&stream);
+                var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
+                defer patcher.deinit(std.testing.allocator);
+                _ = try patcher.pure_patch(parsed.header.entry, &patch, &stream);
+            }
+
+            // check output with a cave
+            const patch_result = try std.process.Child.run(.{
+                .allocator = std.testing.allocator,
+                .argv = &[_][]const u8{ qemu, test_with_patch_path },
+            });
+            defer std.testing.allocator.free(patch_result.stdout);
+            defer std.testing.allocator.free(patch_result.stderr);
+            try std.testing.expect(patch_result.term == .Exited);
+            try std.testing.expect(no_patch_result.term == .Exited);
+            try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
+            try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
+            try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
+        }
     }
-
-    // check output with a cave
-    const patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
-    });
-    defer std.testing.allocator.free(patch_result.stdout);
-    defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expect(patch_result.term == .Exited);
-    try std.testing.expect(no_patch_result.term == .Exited);
-    try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
-    try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
-    try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
 }
 
 test "coff nop patch no difference" {
@@ -171,7 +192,7 @@ test "coff nop patch no difference" {
     // check regular output.
     const no_patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "wine", test_with_patch_path },
+        .argv = &[_][]const u8{test_with_patch_path},
     });
     defer std.testing.allocator.free(no_patch_result.stdout);
     defer std.testing.allocator.free(no_patch_result.stderr);
@@ -194,7 +215,7 @@ test "coff nop patch no difference" {
     // check output with a cave
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "wine", test_with_patch_path },
+        .argv = &[_][]const u8{test_with_patch_path},
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
@@ -358,7 +379,7 @@ test "coff fizzbuzz fizz always" {
     // check regular output.
     const no_patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "wine", test_with_patch_path },
+        .argv = &[_][]const u8{test_with_patch_path},
     });
     defer std.testing.allocator.free(no_patch_result.stdout);
     defer std.testing.allocator.free(no_patch_result.stderr);
@@ -385,7 +406,7 @@ test "coff fizzbuzz fizz always" {
     // check output with a cave
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{ "wine", test_with_patch_path },
+        .argv = &[_][]const u8{test_with_patch_path},
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);

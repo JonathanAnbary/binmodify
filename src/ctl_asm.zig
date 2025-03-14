@@ -79,7 +79,15 @@ pub const CtlFlowAssembler: type = struct {
         switch (curr_arch) {
             .X86 => switch (mode) {
                 .MODE_64, .MODE_32 => {},
-                else => return arch.Error.ModeNotSupported,
+                else => return arch.Error.ArchModeMismatch,
+            },
+            .ARM => switch (mode) {
+                .ARM, .THUMB, .ARMV8 => {},
+                else => return arch.Error.ArchModeMismatch,
+            },
+            .ARM64 => switch (mode) {
+                .ARM64 => {},
+                else => return arch.Error.ArchModeMismatch,
             },
             else => return arch.Error.ArchNotSupported,
         }
@@ -92,7 +100,7 @@ pub const CtlFlowAssembler: type = struct {
 
     // TODO: change this (no reason to return size since it should be constant)
     pub fn assemble_ctl_transfer(self: *const Self, from: u64, to: u64, buf: []u8) !u8 {
-        const ctl_flow_insn = ARCH_TO_CTL_FLOW.get(self.arch) orelse return arch.Error.ArchNotSupported;
+        const ctl_flow_insn = try arch_to_ctl_flow(self.arch, to > from);
         std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
         const target_op_desc = try self.target_operand_bitrange();
         twos_complement(
@@ -150,23 +158,24 @@ pub const CtlFlowAssembler: type = struct {
         };
     }
 
-    pub const ARCH_TO_CTL_FLOW = std.EnumMap(arch.Arch, []const u8).init(std.enums.EnumFieldStruct(arch.Arch, ?[]const u8, @as(?[]const u8, null)){
-        .ARM = &[_]u8{ 0x00, 0x00, 0x00, 0xea },
-        .ARM64 = &[_]u8{ 0x00, 0x00, 0x00, 0x14 },
-        .MIPS = &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },
-        .X86 = &[_]u8{ 0xe9, 0x00, 0x00, 0x00, 0x00 },
-        .PPC = &[_]u8{ 0x00, 0x00, 0x00, 0x48 },
-        .SPARC = null,
-        .SYSZ = null,
-        .XCORE = null,
-        .EVM = null,
-    });
+    pub fn arch_to_ctl_flow(_arch: arch.Arch, forwards: bool) ![]const u8 {
+        return switch (_arch) {
+            // .ARM => &[_]u8{ 0x00, 0x00, 0x00, 0xea },
+            .ARM64 => if (forwards) &[_]u8{ 0x00, 0x00, 0x00, 0x14 } else &[_]u8{ 0x00, 0x00, 0x00, 0x17 },
+            // .MIPS => &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },
+            .X86 => &[_]u8{ 0xe9, 0x00, 0x00, 0x00, 0x00 },
+            // .PPC => &[_]u8{ 0x00, 0x00, 0x00, 0x48 },
+            else => arch.Error.ArchNotSupported,
+        };
+    }
 
     pub const MAX_CTL_FLOW = blk: {
         var max: u8 = 0;
         for (std.meta.fields(arch.Arch)) |curr_arch| {
-            const ctl_flow = ARCH_TO_CTL_FLOW.get(@enumFromInt(curr_arch.value)) orelse continue;
-            if (ctl_flow.len > max) max = ctl_flow.len;
+            const ctl_flow_fr = arch_to_ctl_flow(@enumFromInt(curr_arch.value), true) catch continue;
+            if (ctl_flow_fr.len > max) max = ctl_flow_fr.len;
+            const ctl_flow_bk = arch_to_ctl_flow(@enumFromInt(curr_arch.value), false) catch continue;
+            if (ctl_flow_bk.len > max) max = ctl_flow_bk.len;
         }
         break :blk max;
     };
@@ -193,69 +202,71 @@ fn assemble_ctl_transfer(curr_arch: arch.Arch, mode: arch.Mode, endian: arch.End
 }
 
 test "assemble control flow transfer" {
-    const from = 0x400000;
-    const to = "0x401000";
+    const froms = &.{ 0x400000, 0x401000 };
+    const tos = &.{ "0x401000", "0x400000" };
     var buf: [100]u8 = undefined;
-    const assembled = try ks_assemble(to_ks_arch(arch.Arch.X86), try to_ks_mode(arch.Arch.X86, arch.Mode.MODE_64), "jmp " ++ to, from); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
-    defer keystone.ks_free(assembled.ptr);
-    try std.testing.expectEqualSlices(
-        u8,
-        assembled,
-        try assemble_ctl_transfer(
-            arch.Arch.X86,
-            arch.Mode.MODE_64,
-            .little,
-            from,
-            try std.fmt.parseInt(u64, to, 0),
-            &buf,
-        ),
-    );
-    const assembled2 = try ks_assemble(to_ks_arch(arch.Arch.X86), try to_ks_mode(arch.Arch.X86, arch.Mode.MODE_32), "jmp " ++ to, from); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
-    defer keystone.ks_free(assembled2.ptr);
-    try std.testing.expectEqualSlices(
-        u8,
-        assembled2,
-        try assemble_ctl_transfer(
-            arch.Arch.X86,
-            arch.Mode.MODE_32,
-            .little,
-            from,
-            try std.fmt.parseInt(u64, to, 0),
-            &buf,
-        ),
-    );
+    inline for (froms, tos) |from, to| {
+        const assembled = try ks_assemble(to_ks_arch(arch.Arch.X86), try to_ks_mode(arch.Arch.X86, arch.Mode.MODE_64), "jmp " ++ to, from); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
+        defer keystone.ks_free(assembled.ptr);
+        try std.testing.expectEqualSlices(
+            u8,
+            assembled,
+            try assemble_ctl_transfer(
+                arch.Arch.X86,
+                arch.Mode.MODE_64,
+                .little,
+                from,
+                try std.fmt.parseInt(u64, to, 0),
+                &buf,
+            ),
+        );
+        const assembled2 = try ks_assemble(to_ks_arch(arch.Arch.X86), try to_ks_mode(arch.Arch.X86, arch.Mode.MODE_32), "jmp " ++ to, from); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
+        defer keystone.ks_free(assembled2.ptr);
+        try std.testing.expectEqualSlices(
+            u8,
+            assembled2,
+            try assemble_ctl_transfer(
+                arch.Arch.X86,
+                arch.Mode.MODE_32,
+                .little,
+                from,
+                try std.fmt.parseInt(u64, to, 0),
+                &buf,
+            ),
+        );
 
-    // if the instruction starts at addr, you want to get to target.
-    // the bytes that will make such jump = (target - (addr + 0x8)) >> 0x2. (there are 3 bytes available for the jmp)
-    // for example:
-    // addr = 0x400000
-    // target = 0x401000
-    // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x3fe
-    // const assembled2 = try assemble(to_ks_arch(arch.Arch.ARM), try to_ks_mode(arch.Arch.ARM, arch.Mode.ARM), "bal #" ++ target, addr); // 0x48d160 = 0x123456 * 4 + 0x8.
-    // defer keystone.ks_free(assembled2.ptr);
-    // try std.testing.expectEqualSlices(u8, assembled2, try assemble_ctl_transfer(
-    //     arch.Arch.ARM,
-    //     arch.Mode.ARM,
-    //     arch.Endian.little,
-    //     try std.fmt.parseInt(u64, target, 0),
-    //     addr,
-    //     &buf,
-    // )); // the 0xea is the bal instruction, it comes at the end for some reason.
-    // bytes that will make such jump = (target - addr) >> 0x2. (there are 26 bits available for the jmp).
-    // for example:
-    // addr = 0x400000
-    // target = 0x401000
-    // jmp bytes = 0x400
-    // const assembled5 = try assemble(to_ks_arch(arch.Arch.ARM64), try to_ks_mode(arch.Arch.ARM64, arch.Mode.ARM64), "b #" ++ target, addr); // 0x491158 = (0x123456 + 0x1000) << 2.
-    // defer keystone.ks_free(assembled5.ptr);
-    // try std.testing.expectEqualSlices(u8, assembled5, try assemble_ctl_transfer(
-    //     arch.Arch.ARM64,
-    //     arch.Mode.ARM64,
-    //     arch.Endian.little,
-    //     try std.fmt.parseInt(u64, target, 0),
-    //     addr,
-    //     &buf,
-    // ));
+        // if the instruction starts at addr, you want to get to target.
+        // the bytes that will make such jump = (target - (addr + 0x8)) >> 0x2. (there are 3 bytes available for the jmp)
+        // for example:
+        // addr = 0x400000
+        // target = 0x401000
+        // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x3fe
+        // const assembled2 = try assemble(to_ks_arch(arch.Arch.ARM), try to_ks_mode(arch.Arch.ARM, arch.Mode.ARM), "bal #" ++ target, addr); // 0x48d160 = 0x123456 * 4 + 0x8.
+        // defer keystone.ks_free(assembled2.ptr);
+        // try std.testing.expectEqualSlices(u8, assembled2, try assemble_ctl_transfer(
+        //     arch.Arch.ARM,
+        //     arch.Mode.ARM,
+        //     arch.Endian.little,
+        //     try std.fmt.parseInt(u64, target, 0),
+        //     addr,
+        //     &buf,
+        // )); // the 0xea is the bal instruction, it comes at the end for some reason.
+        // bytes that will make such jump = (target - addr) >> 0x2. (there are 26 bits available for the jmp).
+        // for example:
+        // addr = 0x400000
+        // target = 0x401000
+        // jmp bytes = 0x400
+        const assembled5 = try ks_assemble(to_ks_arch(arch.Arch.ARM64), try to_ks_mode(arch.Arch.ARM64, arch.Mode.ARM64), "b #" ++ to, from); // 0x491158 = (0x123456 + 0x1000) << 2.
+        defer keystone.ks_free(assembled5.ptr);
+        try std.testing.expectEqualSlices(u8, assembled5, try assemble_ctl_transfer(
+            arch.Arch.ARM64,
+            arch.Mode.ARM64,
+            arch.Endian.little,
+            from,
+            try std.fmt.parseInt(u64, to, 0),
+            &buf,
+        ));
+    }
     // bytes that will make such jump = target >> 0x2. (there are 26 bits available for the jmp).
     // for example:
     // addr = 0x400000

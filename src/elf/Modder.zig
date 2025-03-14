@@ -258,6 +258,9 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
         }
         prev_top = top_addr;
     }
+    for (prev_top..ranges.len) |addr_idx| {
+        addr_to_top[addr_idx] = top_addrs.len - 1;
+    }
 
     const temp = Modder{
         .header = .{
@@ -318,17 +321,18 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.File
         i -= 1;
         const off_idx = self.top_offs[i];
         const range_idx = self.off_sort[off_idx];
+        if (flagss[range_idx] != flags) continue;
         const addr_idx = self.range_to_addr[range_idx];
         const top_addr_idx = self.addr_to_top[addr_idx];
-        if (flagss[range_idx] != flags) continue;
         // NOTE: this assumes you dont have an upper bound on possible memory address.
-        if ((addr_idx == (self.ranges.len - 1)) or
-            ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[self.addr_sort[self.top_addrs[top_addr_idx + 1]]])) return SegEdge{
+        if ((top_addr_idx == (self.top_addrs.len - 1)) or ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[self.addr_sort[self.top_addrs[top_addr_idx + 1]]])) return SegEdge{
             .top_idx = i,
             .is_end = true,
         };
-        const prev_top_seg_idx = self.addr_sort[self.top_addrs[top_addr_idx - 1]];
-        const prev_seg_mem_bound = (if (addr_idx == 0) 0 else (addrs[prev_top_seg_idx] + memszs[prev_top_seg_idx]));
+        const prev_seg_mem_bound = if (top_addr_idx == 0) 0 else blk: {
+            const prev_top_seg_idx = self.addr_sort[self.top_addrs[top_addr_idx - 1]];
+            break :blk (addrs[prev_top_seg_idx] + memszs[prev_top_seg_idx]);
+        };
         if (addrs[range_idx] > (wanted_size + prev_seg_mem_bound)) return SegEdge{
             .top_idx = i,
             .is_end = false,
@@ -397,7 +401,7 @@ fn set_phdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
         try parse_source.seekBy(@offsetOf(elf.Elf32_Phdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        if (try parse_source.write(&temp2) == @sizeOf(T)) return Error.UnexpectedEof;
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     }
     // self.phdrs.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
 }
@@ -844,52 +848,69 @@ test "create cave same output" {
         error.SkipZigTest;
     }
     const test_src_path = "./tests/hello_world.zig";
-    const test_with_cave = "./create_cave_same_output_elf";
+    const test_with_cave_prefix = "./create_cave_same_output_elf";
     const cwd: std.fs.Dir = std.fs.cwd();
+    const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
+    const targets = &.{ "x86_64-linux", "aarch64-linux" };
+    const qemus = &.{ "qemu-x86_64", "qemu-aarch64" };
 
-    {
-        const build_src_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=elf", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_src_result.stdout);
-        defer std.testing.allocator.free(build_src_result.stderr);
-        try std.testing.expect(build_src_result.term == .Exited);
-        try std.testing.expect(build_src_result.stderr.len == 0);
+    var maybe_no_cave_results: ?std.process.Child.RunResult = null;
+    defer {
+        if (maybe_no_cave_results) |no_cave_result| {
+            std.testing.allocator.free(no_cave_result.stdout);
+            std.testing.allocator.free(no_cave_result.stderr);
+        }
     }
 
-    // check regular output.
-    const no_cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(no_cave_result.stdout);
-    defer std.testing.allocator.free(no_cave_result.stderr);
+    inline for (optimzes) |optimize| {
+        inline for (targets, qemus) |target, qemu| {
+            const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize;
+            {
+                const build_src_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=elf", "-femit-bin=" ++ test_with_cave_filename[2..], test_src_path },
+                });
+                defer std.testing.allocator.free(build_src_result.stdout);
+                defer std.testing.allocator.free(build_src_result.stderr);
+                try std.testing.expect(build_src_result.term == .Exited);
+                try std.testing.expect(build_src_result.stderr.len == 0);
+            }
 
-    {
-        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
-        defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
-        const wanted_size = 0xfff;
-        const parsed = try Parsed.init(&stream);
-        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
-        defer elf_modder.deinit(std.testing.allocator);
-        const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
-        try elf_modder.create_cave(wanted_size, option, &stream);
+            if (maybe_no_cave_results == null) {
+                // check regular output.
+                maybe_no_cave_results = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{test_with_cave_filename},
+                });
+            }
+            const no_cave_result = maybe_no_cave_results.?;
+
+            {
+                var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
+                defer f.close();
+                var stream = std.io.StreamSource{ .file = f };
+                const wanted_size = 0xfff;
+                const parsed = try Parsed.init(&stream);
+                var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+                defer elf_modder.deinit(std.testing.allocator);
+                const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
+                try elf_modder.create_cave(wanted_size, option, &stream);
+            }
+
+            // check output with a cave
+            const cave_result = try std.process.Child.run(.{
+                .allocator = std.testing.allocator,
+                .argv = &[_][]const u8{ qemu, test_with_cave_filename },
+            });
+            defer std.testing.allocator.free(cave_result.stdout);
+            defer std.testing.allocator.free(cave_result.stderr);
+            try std.testing.expect(cave_result.term == .Exited);
+            try std.testing.expect(no_cave_result.term == .Exited);
+            try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
+            try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
+            try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+        }
     }
-
-    // check output with a cave
-    const cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(cave_result.stdout);
-    defer std.testing.allocator.free(cave_result.stderr);
-    try std.testing.expect(cave_result.term == .Exited);
-    try std.testing.expect(no_cave_result.term == .Exited);
-    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-    try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-    try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
 }
 
 test "corrupted elf (non containied overlapping ranges)" {
@@ -979,60 +1000,6 @@ test "repeated cave expansion equal to single cave" {
         try std.testing.expectEqualSlices(u8, buf2[0..read_amt2], buf1[0..read_amt1]);
     }
     try std.testing.expectEqual(try f_non_repeated.getEndPos(), try f_non_repeated.getPos());
-}
-
-test "create cave same output Debug" {
-    // this test is kind of annoying since technically Debug build is not guarenteed reproducibility.
-    if (builtin.os.tag != .linux) {
-        error.SkipZigTest;
-    }
-    const test_src_path = "./tests/hello_world.zig";
-    const test_with_cave = "./create_cave_same_output_elf_debug";
-    const cwd: std.fs.Dir = std.fs.cwd();
-
-    {
-        const build_src_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-ofmt=elf", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_src_result.stdout);
-        defer std.testing.allocator.free(build_src_result.stderr);
-        try std.testing.expect(build_src_result.term == .Exited);
-        try std.testing.expect(build_src_result.stderr.len == 0);
-    }
-
-    // check regular output.
-    const no_cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(no_cave_result.stdout);
-    defer std.testing.allocator.free(no_cave_result.stderr);
-
-    {
-        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
-        defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
-        const wanted_size = 0xfff;
-        const parsed = try Parsed.init(&stream);
-        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
-        defer elf_modder.deinit(std.testing.allocator);
-        const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
-        try elf_modder.create_cave(wanted_size, option, &stream);
-    }
-
-    // check output with a cave
-    const cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(cave_result.stdout);
-    defer std.testing.allocator.free(cave_result.stderr);
-    try std.testing.expect(cave_result.term == .Exited);
-    try std.testing.expect(no_cave_result.term == .Exited);
-    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-    try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-    try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
 }
 
 // test "create segment same output" {
