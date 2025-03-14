@@ -1,13 +1,11 @@
 const std = @import("std");
 
-const binmodify = @import("binmodify");
-
-const ElfModder = binmodify.ElfModder;
-const CoffModder = binmodify.CoffModder;
-const ElfParsed = binmodify.ElfParsed;
-const CoffParsed = binmodify.CoffParsed;
-const arch = binmodify.arch;
-const patch = binmodify.patch;
+const ElfModder = @import("elf/Modder.zig");
+const CoffModder = @import("coff/Modder.zig");
+const ElfParsed = @import("elf/Parsed.zig");
+const CoffParsed = @import("coff/Parsed.zig");
+const arch = @import("arch.zig");
+const patch = @import("patch.zig");
 
 const capstone = @import("capstone.zig");
 

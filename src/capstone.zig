@@ -1,12 +1,6 @@
 const builtin = @import("builtin");
 
-const arch = blk: {
-    if (builtin.is_test) {
-        break :blk @import("arch.zig");
-    } else {
-        break :blk @import("binmodify").arch;
-    }
-};
+const arch = @import("arch.zig");
 
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
 
