@@ -26,7 +26,7 @@ pub const Error = error{
     IntersectingFileRanges,
     UnexpectedEof,
     VirtualSizeLessThenFileSize,
-} || std.coff.CoffError || std.mem.Allocator.Error;
+} || shift.Error || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError || std.coff.CoffError || std.mem.Allocator.Error;
 
 pub const SecEdge: type = struct {
     sec_idx: usize,
@@ -54,7 +54,7 @@ addr_sort: [*]usize,
 sec_to_addr: [*]usize,
 adjustments: [*]usize,
 
-pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) !Modder {
+pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) Error!Modder {
     _ = parse_source;
     const sechdrs = try parsed_source.coff.getSectionHeadersAlloc(gpa);
     errdefer gpa.free(sechdrs);
@@ -114,7 +114,7 @@ pub fn deinit(self: *Modder, gpa: std.mem.Allocator) void {
 
 // Get an identifier for the location within the file where additional data could be inserted.
 // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
-pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.FileRangeFlags) !?SecEdge {
+pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.FileRangeFlags) Error!?SecEdge {
     var i = self.sechdrs.len;
     while (i > 0) {
         i -= 1;
@@ -137,7 +137,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.File
     return null;
 }
 
-fn calc_new_offset(self: *const Modder, index: usize, size: u64) !u64 {
+fn calc_new_offset(self: *const Modder, index: usize, size: u64) Error!u64 {
     // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
     // and for the case of a start edge whith enough space from the previous segment offset.
     const align_offset = (self.sechdrs[index].pointer_to_raw_data + (self.header.file_alignment - (size % self.header.file_alignment))) % self.header.file_alignment;
@@ -161,7 +161,7 @@ fn calc_new_offset(self: *const Modder, index: usize, size: u64) !u64 {
 
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
-fn set_sechdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, parse_source: anytype) !void {
+fn set_sechdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
     const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + self.header.size_of_optional_header;
     try parse_source.seekTo(offset + @sizeOf(std.coff.SectionHeader) * index);
     const T = std.meta.fieldInfo(std.coff.SectionHeader, @field(SectionHeaderFields, field_name)).type;
@@ -172,7 +172,7 @@ fn set_sechdr_field(self: *Modder, index: usize, val: u64, comptime field_name: 
     @field(self.sechdrs[index], field_name) = @intCast(val);
 }
 
-pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytype) !void {
+pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytype) Error!void {
     const offset = self.sechdrs[edge.sec_idx].pointer_to_raw_data;
     const new_offset: u64 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < offset) size - (offset - new_offset) else size + (new_offset - offset);
@@ -217,7 +217,7 @@ fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
     return std.math.order(context.lhs, context.self.sechdrs[context.self.addr_sort[rhs]].virtual_address);
 }
 
-pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
+pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
     const normalized_addr = if (addr < self.header.image_base) return Error.AddrNotMapped else addr - self.header.image_base;
     const containnig_idx = self.addr_to_idx(normalized_addr);
     if (!(normalized_addr < (self.sechdrs[containnig_idx].virtual_address + self.sechdrs[containnig_idx].virtual_address))) return Error.AddrNotMapped;
@@ -237,7 +237,7 @@ fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
     return std.math.order(context.lhs, context.self.sechdrs[context.self.off_sort[rhs]].pointer_to_raw_data);
 }
 
-pub fn off_to_addr(self: *const Modder, off: u64) !u64 {
+pub fn off_to_addr(self: *const Modder, off: u64) Error!u64 {
     const containnig_idx = self.off_to_idx(off);
     if (!(off < (self.sechdrs[containnig_idx].pointer_to_raw_data + self.sechdrs[containnig_idx].size_of_raw_data))) return Error.OffsetNotLoaded;
     if ((self.sechdrs[containnig_idx].virtual_size < self.sechdrs[containnig_idx].size_of_raw_data) and ((self.sechdrs[containnig_idx].size_of_raw_data - self.sechdrs[containnig_idx].virtual_size) >= self.header.file_alignment)) return Error.VirtualSizeLessThenFileSize;
