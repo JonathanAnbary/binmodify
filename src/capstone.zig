@@ -82,7 +82,8 @@ pub const Disasm: type = struct {
         _ = capstone.cs_close(&self.csh);
     }
 
-    pub fn min_insn_size(self: *Self, size: u64, code: []const u8) u64 {
+    pub fn min_insn_size(self: *Self, size: u64, code: []const u8, addr: u64) u64 {
+        _ = addr;
         const insn: *capstone.cs_insn = capstone.cs_malloc(self.csh);
         defer capstone.cs_free(insn, 1);
         var code_size = code.len;

@@ -56,7 +56,7 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             try stream.seekTo(off_before_patch);
             const max = try stream.read(&buff);
             const ctl_trasnfer_size = (ctl_asm.CtlFlowAssembler.ARCH_TO_CTL_FLOW.get(self.ctl_assembler.arch) orelse return Error.ArchNotSupported).len;
-            const insn_to_move_siz = self.disasm.min_insn_size(ctl_trasnfer_size, buff[0..max]);
+            const insn_to_move_siz = self.disasm.min_insn_size(ctl_trasnfer_size, buff[0..max], addr);
             std.debug.assert(insn_to_move_siz < buff.len);
             const cave_size = patch.len + insn_to_move_siz + ctl_trasnfer_size;
             const cave_option = (try self.modder.get_cave_option(cave_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
