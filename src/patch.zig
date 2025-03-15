@@ -118,12 +118,10 @@ test "elf nop patch no difference" {
             std.testing.allocator.free(no_patch_result.stderr);
         }
     }
-    std.debug.print("\n", .{});
 
     inline for (optimzes) |optimize| {
         inline for (targets, qemus) |target, qemu| {
             const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
-            std.debug.print("test_with_patch_path = {s}\n", .{test_with_patch_path});
 
             {
                 const build_src_result = try std.process.Child.run(.{
@@ -153,8 +151,6 @@ test "elf nop patch no difference" {
                 const parsed = try ElfParsed.init(&stream);
                 var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
                 defer patcher.deinit(std.testing.allocator);
-                std.debug.print("parsed.header.entry = {X}\n", .{parsed.header.entry});
-                ElfModder.print_modelf(patcher.modder);
                 _ = try patcher.pure_patch(parsed.header.entry, &patch, &stream);
             }
 

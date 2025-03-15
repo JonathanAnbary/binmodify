@@ -43,7 +43,7 @@ pub const Error = error{
     NoMatchingOffset,
     IntersectingFileRanges,
     InvalidElfRanges,
-    IntersectingMemoryRanges,
+    OverlappingMemoryRanges,
     UnexpectedEof,
     CantExpandPhdr,
     FileszBiggerThenMemsz,
@@ -86,14 +86,7 @@ fn off_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usize
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
 fn addr_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: usize, rhs: usize) bool {
     const addrs = ranges.items(.addr);
-    const memszs = ranges.items(.memsz);
-    return ((addrs[lhs] < addrs[rhs]) or
-        ((addrs[lhs] == addrs[rhs]) and
-            (memszs[lhs] > memszs[rhs])));
-}
-
-fn sec_offset_lessThanFn(shdrs: *std.MultiArrayList(elf.Elf64_Shdr), lhs: usize, rhs: usize) bool {
-    return (shdrs.items(Shdr64Fields.sh_offset)[lhs] < shdrs.items(Shdr64Fields.sh_offset)[rhs]);
+    return (addrs[lhs] < addrs[rhs]);
 }
 
 const FileRange: type = struct {
@@ -126,7 +119,7 @@ range_to_addr: [*]usize,
 addr_to_top: [*]usize,
 top_offs: []usize,
 adjustments: [*]usize,
-top_addrs: []usize,
+load_ranges: []usize,
 
 const Modder = @This();
 
@@ -156,9 +149,17 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
         .alignment = 0,
         .flags = common.FileRangeFlags{},
     });
+    var load_count: u32 = 0;
+    const load_map = try gpa.alloc(bool, parsed.header.phnum);
+    defer gpa.free(load_map);
     var phdrs_iter = parsed.header.program_header_iterator(parse_source);
-    while (try phdrs_iter.next()) |phdr| {
+    var phdr_idx: u32 = 0;
+    while (try phdrs_iter.next()) |phdr| : (phdr_idx += 1) {
         const flags: PFlags = @bitCast(phdr.p_flags);
+        // NOTE: the docs seem to indicate that PT_TLS should not be loaded based on itself (ie it should overlap with a PT_LOAD)
+        // but this does not seem to be the case.
+        load_map[phdr_idx] = ((phdr.p_type == elf.PT_LOAD) or (phdr.p_type == elf.PT_TLS));
+        if (load_map[phdr_idx]) load_count += 1;
         ranges.appendAssumeCapacity(FileRange{
             .off = phdr.p_offset,
             .filesz = phdr.p_filesz,
@@ -220,46 +221,31 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
     }
     const addrs = ranges.items(.addr);
     const memszs = ranges.items(.memsz);
-    var addr_containing_index = addr_sort[0];
-    var addr_containing_count: usize = 1;
-    if (addrs[addr_containing_index] != 0) return Error.InvalidElfRanges;
-    for (addr_sort[1..]) |index| {
-        const addr = addrs[index];
-        if (addr < (addrs[addr_containing_index] + memszs[addr_containing_index])) {
-            if ((addr + memszs[index]) > (addrs[addr_containing_index] + memszs[addr_containing_index])) {
-                return Error.IntersectingMemoryRanges;
+    const load_ranges = try gpa.alloc(usize, load_count);
+    var load_index: u32 = 0;
+    errdefer gpa.free(load_ranges);
+    for (addr_sort, 0..) |index, i| {
+        if (index < (parsed.header.shnum + 1)) continue;
+        if (load_map[index - (parsed.header.shnum + 1)]) {
+            if ((load_index != 0) and (addrs[index] < (addrs[addr_sort[load_ranges[load_index - 1]]] + memszs[addr_sort[load_ranges[load_index - 1]]]))) {
+                return Error.OverlappingMemoryRanges;
             }
-        } else {
-            addr_containing_index = index;
-            addr_containing_count += 1;
-        }
-    }
-    const top_addrs = try gpa.alloc(usize, addr_containing_count);
-    errdefer gpa.free(top_addrs);
-    addr_containing_count = 0;
-    addr_containing_index = addr_sort[0];
-    top_addrs[addr_containing_count] = 0;
-    addr_containing_count += 1;
-    for (addr_sort[1..], 1..) |index, i| {
-        const addr = addrs[index];
-        if (addr >= (addrs[addr_containing_index] + memszs[addr_containing_index])) {
-            addr_containing_index = index;
-            top_addrs[addr_containing_count] = i;
-            addr_containing_count += 1;
+            load_ranges[load_index] = i;
+            load_index += 1;
         }
     }
 
-    const addr_to_top = try gpa.alloc(usize, ranges.len);
-    errdefer gpa.free(addr_to_top[0..ranges.len]);
-    var prev_top = top_addrs[0];
-    for (top_addrs[1..], 1..) |top_addr, top_idx| {
-        for (prev_top..top_addr) |addr_idx| {
-            addr_to_top[addr_idx] = top_idx - 1;
+    const addr_to_load = try gpa.alloc(usize, ranges.len);
+    errdefer gpa.free(addr_to_load[0..ranges.len]);
+    var prev_load = load_ranges[0];
+    for (load_ranges[1..], 1..) |load_addr, load_idx| {
+        for (prev_load..load_addr) |addr_idx| {
+            addr_to_load[addr_idx] = load_idx - 1;
         }
-        prev_top = top_addr;
+        prev_load = load_addr;
     }
-    for (prev_top..ranges.len) |addr_idx| {
-        addr_to_top[addr_idx] = top_addrs.len - 1;
+    for (prev_load..ranges.len) |addr_idx| {
+        addr_to_load[addr_idx] = load_ranges.len - 1;
     }
 
     const temp = Modder{
@@ -279,10 +265,10 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
         .addr_sort = addr_sort.ptr,
         .range_to_off = range_to_off.ptr,
         .range_to_addr = range_to_addr.ptr,
-        .addr_to_top = addr_to_top.ptr,
+        .addr_to_top = addr_to_load.ptr,
         .top_offs = top_offs,
         .adjustments = (try gpa.alloc(usize, off_containing_count)).ptr,
-        .top_addrs = top_addrs,
+        .load_ranges = load_ranges,
     };
 
     return temp;
@@ -291,7 +277,7 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
 pub fn deinit(self: *Modder, gpa: std.mem.Allocator) void {
     gpa.free(self.adjustments[0..self.top_offs.len]);
     gpa.free(self.addr_to_top[0..self.ranges.len]);
-    gpa.free(self.top_addrs);
+    gpa.free(self.load_ranges);
     gpa.free(self.top_offs);
     gpa.free(self.range_to_addr[0..self.ranges.len]);
     gpa.free(self.range_to_off[0..self.ranges.len]);
@@ -325,12 +311,12 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.File
         const addr_idx = self.range_to_addr[range_idx];
         const top_addr_idx = self.addr_to_top[addr_idx];
         // NOTE: this assumes you dont have an upper bound on possible memory address.
-        if ((top_addr_idx == (self.top_addrs.len - 1)) or ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[self.addr_sort[self.top_addrs[top_addr_idx + 1]]])) return SegEdge{
+        if ((top_addr_idx == (self.load_ranges.len - 1)) or ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[self.addr_sort[self.load_ranges[top_addr_idx + 1]]])) return SegEdge{
             .top_idx = i,
             .is_end = true,
         };
         const prev_seg_mem_bound = if (top_addr_idx == 0) 0 else blk: {
-            const prev_top_seg_idx = self.addr_sort[self.top_addrs[top_addr_idx - 1]];
+            const prev_top_seg_idx = self.addr_sort[self.load_ranges[top_addr_idx - 1]];
             break :blk (addrs[prev_top_seg_idx] + memszs[prev_top_seg_idx]);
         };
         if (addrs[range_idx] > (wanted_size + prev_seg_mem_bound)) return SegEdge{
@@ -676,7 +662,7 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: commo
     const last_off_range_idx = self.off_sort[self.top_offs[self.top_offs.len - 1]];
     const max_off = offs[last_off_range_idx] + fileszs[last_off_range_idx];
     if (max_off != try parse_source.getEndPos()) return Error.UnmappedRange;
-    const last_addr_range_idx = self.addr_sort[self.top_addrs[self.top_addrs.len - 1]];
+    const last_addr_range_idx = self.addr_sort[self.load_ranges[self.load_ranges.len - 1]];
     const max_addr = addrs[last_addr_range_idx] + memszs[last_addr_range_idx];
     try parse_source.seekTo(self.header.phoff + self.header.phentsize * self.header.phnum);
     const alignment = 0x1000;
@@ -706,12 +692,12 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: commo
     self.range_to_addr = (try gpa.realloc(self.range_to_addr[0..self.ranges.len], self.ranges.len + 1)).ptr;
     self.range_to_addr[self.ranges.len] = self.ranges.len;
     self.addr_to_top = (try gpa.realloc(self.addr_to_top[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    self.addr_to_top[self.ranges.len] = self.top_addrs.len;
+    self.addr_to_top[self.ranges.len] = self.load_ranges.len;
     self.adjustments = (try gpa.realloc(self.adjustments[0..self.top_offs.len], self.top_offs.len + 1)).ptr;
     self.top_offs = try gpa.realloc(self.top_offs, self.top_offs.len + 1);
     self.top_offs[self.top_offs.len - 1] = self.ranges.len;
-    self.top_addrs = try gpa.realloc(self.top_addrs, self.top_addrs.len + 1);
-    self.top_addrs[self.top_addrs.len - 1] = self.ranges.len;
+    self.load_ranges = try gpa.realloc(self.load_ranges, self.load_ranges.len + 1);
+    self.load_ranges[self.load_ranges.len - 1] = self.ranges.len;
     try self.ranges.append(gpa, .{
         .addr = max_addr + alignment_addend,
         .off = max_off,
@@ -728,7 +714,6 @@ const CompareContext = struct {
 };
 
 fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-    std.debug.print("lhs = {X}, rhs = {X}\n", .{ context.lhs, context.self.ranges.items(.addr)[context.self.addr_sort[rhs]] });
     return std.math.order(context.lhs, context.self.ranges.items(.addr)[context.self.addr_sort[rhs]]);
 }
 
@@ -738,25 +723,14 @@ pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
     const fileszs = self.ranges.items(.filesz);
     const memszs = self.ranges.items(.memsz);
     const containnig_idx = self.addr_to_idx(addr);
-    std.debug.print("containnig_idx = {X}\n", .{containnig_idx});
     if (addr >= (addrs[containnig_idx] + memszs[containnig_idx])) return Error.AddrNotMapped;
     const potenital_off = offs[containnig_idx] + addr - addrs[containnig_idx];
-    std.debug.print("potenital_off = {X}\n", .{potenital_off});
     if (potenital_off >= (offs[containnig_idx] + fileszs[containnig_idx])) return Error.NoMatchingOffset;
     return potenital_off;
 }
 
 fn addr_to_idx(self: *const Modder, addr: u64) usize {
-    std.debug.print("self.top_addrs.len = {}\n", .{self.top_addrs.len});
-    std.debug.print("addr + 1 = {X}\n", .{addr + 1});
-    const top_addr = std.sort.lowerBound(usize, self.top_addrs, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1;
-    if (top_addr == 0) {
-        std.debug.print("addr_compare = {}\n", .{addr_compareFn(CompareContext{ .self = self, .lhs = addr + 1 }, self.top_addrs[0])});
-    }
-    std.debug.print("top_addr = {}\n", .{top_addr});
-    std.debug.print("addr_sort = {}\n", .{self.top_addrs[top_addr]});
-    std.debug.print("range_idx = {}\n", .{self.addr_sort[self.top_addrs[top_addr]]});
-    return self.addr_sort[self.top_addrs[std.sort.lowerBound(usize, self.top_addrs, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1]];
+    return self.addr_sort[self.load_ranges[std.sort.lowerBound(usize, self.load_ranges, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1]];
 }
 
 fn top_off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
@@ -857,9 +831,9 @@ pub fn print_modelf(elf_modder: Modder) void {
         }
         std.debug.print("\n", .{});
     }
-    std.debug.print("\naddr file ranges:\n", .{});
-    for (elf_modder.top_addrs, 0..) |top_addr, i| {
-        const index = elf_modder.addr_sort[top_addr];
+    std.debug.print("\nload ranges:\n", .{});
+    for (elf_modder.load_ranges, 0..) |load_range, i| {
+        const index = elf_modder.addr_sort[load_range];
         var print_index: usize = undefined;
         var name: [*:0]const u8 = undefined;
         switch (elf_modder.range_type(index)) {
@@ -876,14 +850,14 @@ pub fn print_modelf(elf_modder: Modder) void {
                 print_index = index - (elf_modder.header.shnum + 1);
             },
         }
-        std.debug.print("top = {s}[{}].off = {X}, .addr = {X}:\n", .{
+        std.debug.print("load_range = {s}[{}].off = {X}, .addr = {X}:\n", .{
             name,
             print_index,
             offs[index],
             addrs[index],
         });
-        const end = if ((i + 1) == elf_modder.top_addrs.len) elf_modder.ranges.len else elf_modder.top_addrs[i + 1];
-        for (elf_modder.addr_sort[top_addr..end]) |range_idx| {
+        const end = if ((i + 1) == elf_modder.load_ranges.len) elf_modder.ranges.len else elf_modder.load_ranges[i + 1];
+        for (elf_modder.addr_sort[load_range..end]) |range_idx| {
             switch (elf_modder.range_type(range_idx)) {
                 .SectionHeader => {
                     name = "shdr";
