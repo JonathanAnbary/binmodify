@@ -108,8 +108,9 @@ test "elf nop patch no difference" {
     const test_with_patch_prefix = "./elf_nop_patch_no_difference";
     const cwd: std.fs.Dir = std.fs.cwd();
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
-    const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux" };
-    const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64" };
+    const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux", "arm-linux" };
+    const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64", "qemu-arm" };
+    const nops = &.{ [_]u8{0x90}, [_]u8{0x90}, [_]u8{ 0x1F, 0x20, 0x03, 0xD5 }, [_]u8{ 0xE1, 0xA0, 0x00, 0x00 } };
 
     var maybe_no_patch_result: ?std.process.Child.RunResult = null;
     defer {
@@ -120,7 +121,7 @@ test "elf nop patch no difference" {
     }
 
     inline for (optimzes) |optimize| {
-        inline for (targets, qemus) |target, qemu| {
+        inline for (targets, qemus, nops) |target, qemu, nop| {
             const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
 
             {
@@ -147,7 +148,7 @@ test "elf nop patch no difference" {
                 var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
                 defer f.close();
                 var stream = std.io.StreamSource{ .file = f };
-                const patch = [_]u8{0x90} ** 0x900; // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
+                const patch = nop ** 0x900;
                 const parsed = try ElfParsed.init(&stream);
                 var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
                 defer patcher.deinit(std.testing.allocator);

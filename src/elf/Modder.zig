@@ -893,8 +893,8 @@ test "create cave same output" {
     const test_with_cave_prefix = "./create_cave_same_output_elf";
     const cwd: std.fs.Dir = std.fs.cwd();
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
-    const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux" };
-    const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64" };
+    const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux", "arm-linux" };
+    const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64", "qemu-arm" };
 
     var maybe_no_cave_results: ?std.process.Child.RunResult = null;
     defer {
