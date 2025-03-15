@@ -728,6 +728,7 @@ const CompareContext = struct {
 };
 
 fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
+    std.debug.print("lhs = {X}, rhs = {X}\n", .{ context.lhs, context.self.ranges.items(.addr)[context.self.addr_sort[rhs]] });
     return std.math.order(context.lhs, context.self.ranges.items(.addr)[context.self.addr_sort[rhs]]);
 }
 
@@ -737,13 +738,24 @@ pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
     const fileszs = self.ranges.items(.filesz);
     const memszs = self.ranges.items(.memsz);
     const containnig_idx = self.addr_to_idx(addr);
-    if (!(addr < (addrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
+    std.debug.print("containnig_idx = {X}\n", .{containnig_idx});
+    if (addr >= (addrs[containnig_idx] + memszs[containnig_idx])) return Error.AddrNotMapped;
     const potenital_off = offs[containnig_idx] + addr - addrs[containnig_idx];
-    if (!(potenital_off < (offs[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
+    std.debug.print("potenital_off = {X}\n", .{potenital_off});
+    if (potenital_off >= (offs[containnig_idx] + fileszs[containnig_idx])) return Error.NoMatchingOffset;
     return potenital_off;
 }
 
 fn addr_to_idx(self: *const Modder, addr: u64) usize {
+    std.debug.print("self.top_addrs.len = {}\n", .{self.top_addrs.len});
+    std.debug.print("addr + 1 = {X}\n", .{addr + 1});
+    const top_addr = std.sort.lowerBound(usize, self.top_addrs, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1;
+    if (top_addr == 0) {
+        std.debug.print("addr_compare = {}\n", .{addr_compareFn(CompareContext{ .self = self, .lhs = addr + 1 }, self.top_addrs[0])});
+    }
+    std.debug.print("top_addr = {}\n", .{top_addr});
+    std.debug.print("addr_sort = {}\n", .{self.top_addrs[top_addr]});
+    std.debug.print("range_idx = {}\n", .{self.addr_sort[self.top_addrs[top_addr]]});
     return self.addr_sort[self.top_addrs[std.sort.lowerBound(usize, self.top_addrs, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1]];
 }
 
@@ -776,9 +788,11 @@ fn off_to_top_idx(self: *const Modder, off: u64) usize {
     return std.sort.lowerBound(usize, self.top_offs, CompareContext{ .self = self, .lhs = off + 1 }, top_off_compareFn) - 1;
 }
 
-fn print_modelf(elf_modder: Modder) void {
+pub fn print_modelf(elf_modder: Modder) void {
     const offs = elf_modder.ranges.items(.off);
     const addrs = elf_modder.ranges.items(.addr);
+    const fileszs = elf_modder.ranges.items(.filesz);
+    const memszs = elf_modder.ranges.items(.memsz);
     std.debug.print("\n", .{});
     std.debug.print("{X}", .{offs[0]});
     for (elf_modder.off_sort[1..elf_modder.ranges.len]) |idx| {
@@ -791,7 +805,7 @@ fn print_modelf(elf_modder: Modder) void {
     }
     std.debug.print("\n", .{});
 
-    std.debug.print("\nfile ranges:\n", .{});
+    std.debug.print("\noff file ranges:\n", .{});
     for (elf_modder.top_offs, 0..) |top_off, i| {
         const index = elf_modder.off_sort[top_off];
         var print_index: usize = undefined;
@@ -832,11 +846,65 @@ fn print_modelf(elf_modder: Modder) void {
                     print_index = range_idx - (elf_modder.header.shnum + 1);
                 },
             }
-            std.debug.print("\t{s}[{}].off = {X}, .addr = {X}", .{
+            std.debug.print("\t{s}[{}].off = {X}, .addr = {X}, .fsize = {X}, .msize = {X}\n", .{
                 name,
                 print_index,
                 offs[range_idx],
                 addrs[range_idx],
+                fileszs[range_idx],
+                memszs[range_idx],
+            });
+        }
+        std.debug.print("\n", .{});
+    }
+    std.debug.print("\naddr file ranges:\n", .{});
+    for (elf_modder.top_addrs, 0..) |top_addr, i| {
+        const index = elf_modder.addr_sort[top_addr];
+        var print_index: usize = undefined;
+        var name: [*:0]const u8 = undefined;
+        switch (elf_modder.range_type(index)) {
+            .SectionHeader => {
+                name = "shdr";
+                print_index = index;
+            },
+            .SectionHeaderTable => {
+                name = "shdr_table";
+                print_index = 0;
+            },
+            .ProgramHeader => {
+                name = "phdr";
+                print_index = index - (elf_modder.header.shnum + 1);
+            },
+        }
+        std.debug.print("top = {s}[{}].off = {X}, .addr = {X}:\n", .{
+            name,
+            print_index,
+            offs[index],
+            addrs[index],
+        });
+        const end = if ((i + 1) == elf_modder.top_addrs.len) elf_modder.ranges.len else elf_modder.top_addrs[i + 1];
+        for (elf_modder.addr_sort[top_addr..end]) |range_idx| {
+            switch (elf_modder.range_type(range_idx)) {
+                .SectionHeader => {
+                    name = "shdr";
+                    print_index = range_idx;
+                },
+                .SectionHeaderTable => {
+                    name = "shdr_table";
+                    print_index = 0;
+                },
+                .ProgramHeader => {
+                    name = "phdr";
+                    print_index = range_idx - (elf_modder.header.shnum + 1);
+                },
+            }
+            std.debug.print("\t{s}[{}].off = {X}, .addr = {X}, .fsize = {X}, .msize = {X}\n", .{
+                name,
+                print_index,
+                offs[range_idx],
+                addrs[range_idx],
+                fileszs[range_idx],
+                memszs[range_idx],
             });
         }
         std.debug.print("\n", .{});
@@ -851,8 +919,8 @@ test "create cave same output" {
     const test_with_cave_prefix = "./create_cave_same_output_elf";
     const cwd: std.fs.Dir = std.fs.cwd();
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
-    const targets = &.{ "x86_64-linux", "aarch64-linux" };
-    const qemus = &.{ "qemu-x86_64", "qemu-aarch64" };
+    const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux" };
+    const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64" };
 
     var maybe_no_cave_results: ?std.process.Child.RunResult = null;
     defer {

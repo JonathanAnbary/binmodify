@@ -108,8 +108,8 @@ test "elf nop patch no difference" {
     const test_with_patch_prefix = "./elf_nop_patch_no_difference";
     const cwd: std.fs.Dir = std.fs.cwd();
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
-    const targets = &.{ "x86_64-linux", "aarch64-linux" };
-    const qemus = &.{ "qemu-x86_64", "qemu-aarch64" };
+    const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux" };
+    const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64" };
 
     var maybe_no_patch_result: ?std.process.Child.RunResult = null;
     defer {
@@ -118,10 +118,12 @@ test "elf nop patch no difference" {
             std.testing.allocator.free(no_patch_result.stderr);
         }
     }
+    std.debug.print("\n", .{});
 
     inline for (optimzes) |optimize| {
         inline for (targets, qemus) |target, qemu| {
             const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
+            std.debug.print("test_with_patch_path = {s}\n", .{test_with_patch_path});
 
             {
                 const build_src_result = try std.process.Child.run(.{
@@ -151,6 +153,8 @@ test "elf nop patch no difference" {
                 const parsed = try ElfParsed.init(&stream);
                 var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
                 defer patcher.deinit(std.testing.allocator);
+                std.debug.print("parsed.header.entry = {X}\n", .{parsed.header.entry});
+                ElfModder.print_modelf(patcher.modder);
                 _ = try patcher.pure_patch(parsed.header.entry, &patch, &stream);
             }
 
