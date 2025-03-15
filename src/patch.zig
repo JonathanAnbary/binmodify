@@ -1,11 +1,9 @@
+//! Provides a generic structure for creating inline hooks in executable files.
+
 const std = @import("std");
 const builtin = @import("builtin");
 
 const arch = @import("arch.zig");
-const ElfModder = @import("elf/Modder.zig");
-const ElfParsed = @import("elf/Parsed.zig");
-const CoffModder = @import("coff/Modder.zig");
-const CoffParsed = @import("coff/Parsed.zig");
 const ctl_asm = @import("ctl_asm.zig");
 
 pub const PatchInfo: type = extern struct {
@@ -19,7 +17,9 @@ pub const PatchInfo: type = extern struct {
 pub fn Patcher(Modder: type, Disasm: type) type {
     return struct {
         modder: Modder,
-        ctl_assembler: ctl_asm.CtlFlowAssembler,
+        arch: arch.Arch,
+        mode: arch.Mode,
+        endian: arch.Endian,
         disasm: Disasm,
 
         const Self = @This();
@@ -43,7 +43,9 @@ pub fn Patcher(Modder: type, Disasm: type) type {
 
             return Self{
                 .modder = modder,
-                .ctl_assembler = try ctl_asm.CtlFlowAssembler.init(farch, fmode, fendian),
+                .arch = farch,
+                .mode = fmode,
+                .endian = fendian,
                 .disasm = disasm,
             };
         }
@@ -66,13 +68,13 @@ pub fn Patcher(Modder: type, Disasm: type) type {
         /// The simplest way to think of it is that you are adding the patch bytes to the program in insert mode.
         pub fn pure_patch(self: *Self, addr: u64, patch: []const u8, stream: anytype) !PatchInfo {
             // TODO: think about this 20 (pull out of my ass as the maximum partial instruction size that might be needed).
-            var buff: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW + 20]u8 = undefined;
+            var buff: [ctl_asm.MAX_CTL_FLOW + 20]u8 = undefined;
             const off_before_patch = try self.modder.addr_to_off(addr);
             try stream.seekTo(off_before_patch);
             const max = try stream.read(&buff);
             const ctl_transfer_size = @max(
-                (try ctl_asm.CtlFlowAssembler.arch_to_ctl_flow(self.ctl_assembler.arch, true)).len,
-                (try ctl_asm.CtlFlowAssembler.arch_to_ctl_flow(self.ctl_assembler.arch, false)).len,
+                (try ctl_asm.arch_to_ctl_flow(self.arch, true)).len,
+                (try ctl_asm.arch_to_ctl_flow(self.arch, false)).len,
             );
             const insn_to_move_siz = self.disasm.min_insn_size(ctl_transfer_size, buff[0..max], addr);
             std.debug.assert(insn_to_move_siz < buff.len);
@@ -87,11 +89,11 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             if (try stream.write(patch) != patch.len) return Error.UnexpectedEof;
             try stream.seekTo(cave_off + patch.len);
             if (try stream.write(buff[0..insn_to_move_siz]) != insn_to_move_siz) return Error.UnexpectedEof;
-            const patch_to_cave_size = try self.ctl_assembler.assemble_ctl_transfer(addr, cave_addr, &buff);
+            const patch_to_cave_size = try ctl_asm.assemble_ctl_transfer(self.arch, self.mode, self.endian, addr, cave_addr, &buff);
             std.debug.assert(patch_to_cave_size == ctl_transfer_size);
             try stream.seekTo(off_after_patch);
             if (try stream.write(buff[0..patch_to_cave_size]) != patch_to_cave_size) return Error.UnexpectedEof;
-            const cave_to_patch_size = try self.ctl_assembler.assemble_ctl_transfer(cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
+            const cave_to_patch_size = try ctl_asm.assemble_ctl_transfer(self.arch, self.mode, self.endian, cave_addr + patch.len + insn_to_move_siz, addr + insn_to_move_siz, &buff);
             std.debug.assert(cave_to_patch_size == ctl_transfer_size);
             try stream.seekTo(cave_off + patch.len + insn_to_move_siz);
             if (try stream.write(buff[0..cave_to_patch_size]) != cave_to_patch_size) return Error.UnexpectedEof;
@@ -107,6 +109,11 @@ const capstone = blk: {
         break :blk @import("capstone.zig");
     } else unreachable;
 };
+
+const ElfModder = @import("elf/Modder.zig");
+const ElfParsed = @import("elf/Parsed.zig");
+const CoffModder = @import("coff/Modder.zig");
+const CoffParsed = @import("coff/Parsed.zig");
 
 test "elf nop patch no difference" {
     if (builtin.os.tag != .linux) {

@@ -1,3 +1,5 @@
+//! The structures used for communicating architecture information between the different functions of the module.
+
 const std = @import("std");
 
 pub const Error: type = error{

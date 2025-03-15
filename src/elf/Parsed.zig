@@ -1,3 +1,5 @@
+//! Used for creating an `elf/Modder` structure.
+
 const std = @import("std");
 const elf = std.elf;
 
@@ -7,9 +9,9 @@ header: elf.Header,
 
 const Self = @This();
 
-pub fn init(stream: anytype) !Self {
+pub fn init(file: anytype) !Self {
     return .{
-        .header = try elf.Header.read(stream),
+        .header = try elf.Header.read(file),
     };
 }
 

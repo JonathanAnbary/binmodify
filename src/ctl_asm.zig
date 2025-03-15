@@ -68,123 +68,99 @@ test "twos complement" {
     }
 }
 
-pub const CtlFlowAssembler: type = struct {
-    arch: arch.Arch,
+// TODO: change this (no reason to return size since it should be constant)
+pub fn assemble_ctl_transfer(
+    _arch: arch.Arch,
     mode: arch.Mode,
     endian: arch.Endian,
+    from: u64,
+    to: u64,
+    buf: []u8,
+) !u8 {
+    const ctl_flow_insn = try arch_to_ctl_flow(_arch, to > from);
+    std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
+    const target_op_desc = try target_operand_bitrange(_arch, mode);
+    twos_complement(
+        try calc_ctl_tranfer_op(_arch, mode, to, from),
+        target_op_desc.size,
+        endian,
+        buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8],
+    );
+    return @intCast(ctl_flow_insn.len);
+}
 
-    const Self = @This();
-
-    pub fn init(curr_arch: arch.Arch, mode: arch.Mode, endian: arch.Endian) arch.Error!Self {
-        switch (curr_arch) {
-            .X86 => switch (mode) {
-                .MODE_64, .MODE_32 => {},
-                else => return arch.Error.ArchModeMismatch,
-            },
-            .ARM => switch (mode) {
-                .ARM, .THUMB, .ARMV8 => {},
-                else => return arch.Error.ArchModeMismatch,
-            },
-            .ARM64 => switch (mode) {
-                .ARM64 => {},
-                else => return arch.Error.ArchModeMismatch,
-            },
-            else => return arch.Error.ArchNotSupported,
-        }
-        return .{
-            .arch = curr_arch,
-            .mode = mode,
-            .endian = endian,
-        };
-    }
-
-    // TODO: change this (no reason to return size since it should be constant)
-    pub fn assemble_ctl_transfer(self: *const Self, from: u64, to: u64, buf: []u8) !u8 {
-        const ctl_flow_insn = try arch_to_ctl_flow(self.arch, to > from);
-        std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
-        const target_op_desc = try self.target_operand_bitrange();
-        twos_complement(
-            try self.calc_ctl_tranfer_op(to, from),
-            target_op_desc.size,
-            self.endian,
-            buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8],
-        );
-        return @intCast(ctl_flow_insn.len);
-    }
-
-    fn target_operand_bitrange(self: *const Self) !OpDesc {
-        return switch (self.arch) {
-            .X86 => switch (self.mode) {
-                .MODE_64 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
-                .MODE_32 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
-                else => arch.Error.ModeNotSupported,
-            },
-            .ARM => switch (self.mode) {
-                .ARM => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
-                else => arch.Error.ModeNotSupported,
-            },
-            .ARM64 => switch (self.mode) {
-                .ARM64 => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
-                else => arch.Error.ModeNotSupported,
-            },
-            .MIPS => switch (self.mode) {
-                .MIPS64 => OpDesc{ .off = 0, .size = 26, .signedness = .unsigned },
-                else => arch.Error.ModeNotSupported,
-            },
-            else => arch.Error.ArchNotSupported,
-        };
-    }
-
-    fn calc_ctl_tranfer_op(self: *const Self, target: i128, addr: i128) !i128 {
-        return switch (self.arch) {
-            .X86 => switch (self.mode) {
-                .MODE_64 => target - (addr + 0x5),
-                .MODE_32 => target - (addr + 0x5),
-                else => arch.Error.ModeNotSupported,
-            },
-            .ARM => switch (self.mode) {
-                .ARM => (target - (addr + 0x8)) >> 0x2,
-                else => arch.Error.ModeNotSupported,
-            },
-            .ARM64 => switch (self.mode) {
-                .ARM64 => (target - addr) >> 0x2,
-                else => arch.Error.ModeNotSupported,
-            },
-            .MIPS => switch (self.mode) {
-                .MIPS64 => target >> 0x2,
-                else => arch.Error.ModeNotSupported,
-            },
-            else => arch.Error.ArchNotSupported,
-        };
-    }
-
-    pub fn arch_to_ctl_flow(_arch: arch.Arch, forwards: bool) ![]const u8 {
-        return switch (_arch) {
-            .ARM => &[_]u8{ 0x00, 0x00, 0x00, 0xea },
-            .ARM64 => if (forwards) &[_]u8{ 0x00, 0x00, 0x00, 0x14 } else &[_]u8{ 0x00, 0x00, 0x00, 0x17 },
-            // .MIPS => &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },
-            .X86 => &[_]u8{ 0xe9, 0x00, 0x00, 0x00, 0x00 },
-            // .PPC => &[_]u8{ 0x00, 0x00, 0x00, 0x48 },
-            else => arch.Error.ArchNotSupported,
-        };
-    }
-
-    pub const MAX_CTL_FLOW = blk: {
-        var max: u8 = 0;
-        for (std.meta.fields(arch.Arch)) |curr_arch| {
-            const ctl_flow_fr = arch_to_ctl_flow(@enumFromInt(curr_arch.value), true) catch continue;
-            if (ctl_flow_fr.len > max) max = ctl_flow_fr.len;
-            const ctl_flow_bk = arch_to_ctl_flow(@enumFromInt(curr_arch.value), false) catch continue;
-            if (ctl_flow_bk.len > max) max = ctl_flow_bk.len;
-        }
-        break :blk max;
+fn target_operand_bitrange(_arch: arch.Arch, mode: arch.Mode) !OpDesc {
+    return switch (_arch) {
+        .X86 => switch (mode) {
+            .MODE_64 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
+            .MODE_32 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
+            else => arch.Error.ModeNotSupported,
+        },
+        .ARM => switch (mode) {
+            .ARM => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
+            else => arch.Error.ModeNotSupported,
+        },
+        .ARM64 => switch (mode) {
+            .ARM64 => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
+            else => arch.Error.ModeNotSupported,
+        },
+        .MIPS => switch (mode) {
+            .MIPS64 => OpDesc{ .off = 0, .size = 26, .signedness = .unsigned },
+            else => arch.Error.ModeNotSupported,
+        },
+        else => arch.Error.ArchNotSupported,
     };
+}
 
-    const OpDesc: type = struct {
-        off: u8,
-        size: u8,
-        signedness: std.builtin.Signedness,
+fn calc_ctl_tranfer_op(_arch: arch.Arch, mode: arch.Mode, target: i128, addr: i128) !i128 {
+    return switch (_arch) {
+        .X86 => switch (mode) {
+            .MODE_64 => target - (addr + 0x5),
+            .MODE_32 => target - (addr + 0x5),
+            else => arch.Error.ModeNotSupported,
+        },
+        .ARM => switch (mode) {
+            .ARM => (target - (addr + 0x8)) >> 0x2,
+            else => arch.Error.ModeNotSupported,
+        },
+        .ARM64 => switch (mode) {
+            .ARM64 => (target - addr) >> 0x2,
+            else => arch.Error.ModeNotSupported,
+        },
+        .MIPS => switch (mode) {
+            .MIPS64 => target >> 0x2,
+            else => arch.Error.ModeNotSupported,
+        },
+        else => arch.Error.ArchNotSupported,
     };
+}
+
+pub fn arch_to_ctl_flow(_arch: arch.Arch, forwards: bool) ![]const u8 {
+    return switch (_arch) {
+        .ARM => &[_]u8{ 0x00, 0x00, 0x00, 0xea },
+        .ARM64 => if (forwards) &[_]u8{ 0x00, 0x00, 0x00, 0x14 } else &[_]u8{ 0x00, 0x00, 0x00, 0x17 },
+        // .MIPS => &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },
+        .X86 => &[_]u8{ 0xe9, 0x00, 0x00, 0x00, 0x00 },
+        // .PPC => &[_]u8{ 0x00, 0x00, 0x00, 0x48 },
+        else => arch.Error.ArchNotSupported,
+    };
+}
+
+pub const MAX_CTL_FLOW = blk: {
+    var max: u8 = 0;
+    for (std.meta.fields(arch.Arch)) |curr_arch| {
+        const ctl_flow_fr = arch_to_ctl_flow(@enumFromInt(curr_arch.value), true) catch continue;
+        if (ctl_flow_fr.len > max) max = ctl_flow_fr.len;
+        const ctl_flow_bk = arch_to_ctl_flow(@enumFromInt(curr_arch.value), false) catch continue;
+        if (ctl_flow_bk.len > max) max = ctl_flow_bk.len;
+    }
+    break :blk max;
+};
+
+const OpDesc: type = struct {
+    off: u8,
+    size: u8,
+    signedness: std.builtin.Signedness,
 };
 
 // testing stuff
@@ -195,77 +171,30 @@ const keystone = blk: {
     } else unreachable;
 };
 
-fn assemble_ctl_transfer(curr_arch: arch.Arch, mode: arch.Mode, endian: arch.Endian, from: u64, to: u64, buf: []u8) ![]u8 {
-    const ctl_flow_engine: CtlFlowAssembler = try CtlFlowAssembler.init(curr_arch, mode, endian);
-    const temp = try ctl_flow_engine.assemble_ctl_transfer(from, to, buf);
-    return buf[0..temp];
-}
-
 test "assemble control flow transfer" {
     const froms = &.{ 0x400000, 0x401000 };
     const tos = &.{ "0x401000", "0x400000" };
+    const archs = [_]arch.Arch{ .X86, .X86, .ARM, .ARM64 };
+    const modes = [_]arch.Mode{ .MODE_64, .MODE_32, .ARM, .ARM64 };
+    const insns = [_][]const u8{ "jmp ", "jmp ", "bal #", "b #" };
     var buf: [100]u8 = undefined;
     inline for (froms, tos) |from, to| {
-        const assembled = try ks_assemble(to_ks_arch(arch.Arch.X86), try to_ks_mode(arch.Arch.X86, arch.Mode.MODE_64), "jmp " ++ to, from); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
-        defer keystone.ks_free(assembled.ptr);
-        try std.testing.expectEqualSlices(
-            u8,
-            assembled,
-            try assemble_ctl_transfer(
-                arch.Arch.X86,
-                arch.Mode.MODE_64,
-                .little,
-                from,
-                try std.fmt.parseInt(u64, to, 0),
-                &buf,
-            ),
-        );
-        const assembled2 = try ks_assemble(to_ks_arch(arch.Arch.X86), try to_ks_mode(arch.Arch.X86, arch.Mode.MODE_32), "jmp " ++ to, from); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
-        defer keystone.ks_free(assembled2.ptr);
-        try std.testing.expectEqualSlices(
-            u8,
-            assembled2,
-            try assemble_ctl_transfer(
-                arch.Arch.X86,
-                arch.Mode.MODE_32,
-                .little,
-                from,
-                try std.fmt.parseInt(u64, to, 0),
-                &buf,
-            ),
-        );
-
-        // if the instruction starts at addr, you want to get to target.
-        // the bytes that will make such jump = (target - (addr + 0x8)) >> 0x2. (there are 3 bytes available for the jmp)
-        // for example:
-        // addr = 0x400000
-        // target = 0x401000
-        // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x3fe
-        // const assembled2 = try assemble(to_ks_arch(arch.Arch.ARM), try to_ks_mode(arch.Arch.ARM, arch.Mode.ARM), "bal #" ++ target, addr); // 0x48d160 = 0x123456 * 4 + 0x8.
-        // defer keystone.ks_free(assembled2.ptr);
-        // try std.testing.expectEqualSlices(u8, assembled2, try assemble_ctl_transfer(
-        //     arch.Arch.ARM,
-        //     arch.Mode.ARM,
-        //     arch.Endian.little,
-        //     try std.fmt.parseInt(u64, target, 0),
-        //     addr,
-        //     &buf,
-        // )); // the 0xea is the bal instruction, it comes at the end for some reason.
-        // bytes that will make such jump = (target - addr) >> 0x2. (there are 26 bits available for the jmp).
-        // for example:
-        // addr = 0x400000
-        // target = 0x401000
-        // jmp bytes = 0x400
-        const assembled5 = try ks_assemble(to_ks_arch(arch.Arch.ARM64), try to_ks_mode(arch.Arch.ARM64, arch.Mode.ARM64), "b #" ++ to, from); // 0x491158 = (0x123456 + 0x1000) << 2.
-        defer keystone.ks_free(assembled5.ptr);
-        try std.testing.expectEqualSlices(u8, assembled5, try assemble_ctl_transfer(
-            arch.Arch.ARM64,
-            arch.Mode.ARM64,
-            arch.Endian.little,
-            from,
-            try std.fmt.parseInt(u64, to, 0),
-            &buf,
-        ));
+        inline for (archs, modes, insns) |_arch, mode, insn| {
+            const assembled = try ks_assemble(to_ks_arch(_arch), try to_ks_mode(_arch, mode), insn ++ to, from);
+            defer keystone.ks_free(assembled.ptr);
+            try std.testing.expectEqualSlices(
+                u8,
+                assembled,
+                buf[0..try assemble_ctl_transfer(
+                    _arch,
+                    mode,
+                    .little,
+                    from,
+                    try std.fmt.parseInt(u64, to, 0),
+                    &buf,
+                )],
+            );
+        }
     }
     // bytes that will make such jump = target >> 0x2. (there are 26 bits available for the jmp).
     // for example:

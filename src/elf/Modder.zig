@@ -1,3 +1,6 @@
+//! Provides utilities for modifying ELF's, specificly the get_cave_option(), create_cave(), addr_to_off(), off_to_addr(), cave_to_off() functions.
+//! Which are required for a usage with the patch.Patcher structure.
+
 const std = @import("std");
 const elf = std.elf;
 
@@ -123,12 +126,12 @@ load_ranges: []usize,
 
 const Modder = @This();
 
-pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype) Error!Modder {
+pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) Error!Modder {
     var ranges = std.MultiArrayList(FileRange){};
     errdefer ranges.deinit(gpa);
     // + 1 for the sechdr table which appears to not be contained in any section/segment.
     try ranges.setCapacity(gpa, parsed.header.shnum + 1 + parsed.header.phnum);
-    var shdrs_iter = parsed.header.section_header_iterator(parse_source);
+    var shdrs_iter = parsed.header.section_header_iterator(file);
     while (try shdrs_iter.next()) |shdr| {
         ranges.appendAssumeCapacity(FileRange{
             .off = shdr.sh_offset,
@@ -152,7 +155,7 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
     var load_count: u32 = 0;
     const load_map = try gpa.alloc(bool, parsed.header.phnum);
     defer gpa.free(load_map);
-    var phdrs_iter = parsed.header.program_header_iterator(parse_source);
+    var phdrs_iter = parsed.header.program_header_iterator(file);
     var phdr_idx: u32 = 0;
     while (try phdrs_iter.next()) |phdr| : (phdr_idx += 1) {
         const flags: PFlags = @bitCast(phdr.p_flags);
@@ -297,7 +300,7 @@ fn range_type(self: *const Modder, index: usize) RangeType {
     return if (index < self.header.shnum) .SectionHeader else if (index == self.header.shnum) .SectionHeaderTable else .ProgramHeader;
 }
 
-// Get an identifier for the location within the file where additional data could be inserted.
+/// Get information for the location within the file where additional data could be inserted.
 pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) Error!?SegEdge {
     const flagss = self.ranges.items(.flags);
     const addrs = self.ranges.items(.addr);
@@ -327,67 +330,67 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
     return null;
 }
 
-fn set_shdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+fn set_shdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, file: anytype) Error!void {
     if (index >= self.header.shnum) return Error.OutOfBoundField;
-    try parse_source.seekTo(self.header.shoff + self.header.shentsize * index);
+    try file.seekTo(self.header.shoff + self.header.shentsize * index);
     if (self.header.is_64) {
         const T = std.meta.fieldInfo(elf.Elf64_Shdr, @field(Shdr64Fields, field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-        try parse_source.seekBy(@offsetOf(elf.Elf64_Shdr, field_name));
+        try file.seekBy(@offsetOf(elf.Elf64_Shdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+        if (try file.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     } else {
         const T = std.meta.fieldInfo(elf.Elf32_Shdr, @field(Shdr32Fields, field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-        try parse_source.seekBy(@offsetOf(elf.Elf32_Shdr, field_name));
+        try file.seekBy(@offsetOf(elf.Elf32_Shdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+        if (try file.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     }
     // self.shdrs.items(@field(Shdr64Fields, field_name))[index] = @intCast(val);
 }
 
-fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, file: anytype) Error!void {
     const native_field_name = "e_" ++ field_name;
-    try parse_source.seekTo(0);
+    try file.seekTo(0);
     if (self.header.is_64) {
         const T = std.meta.fieldInfo(elf.Elf64_Ehdr, @field(Ehdr64Fields, native_field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-        try parse_source.seekBy(@offsetOf(elf.Elf64_Ehdr, native_field_name));
+        try file.seekBy(@offsetOf(elf.Elf64_Ehdr, native_field_name));
         const temp2 = std.mem.toBytes(temp);
-        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+        if (try file.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     } else {
         const T = std.meta.fieldInfo(elf.Elf32_Ehdr, @field(Ehdr32Fields, native_field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-        try parse_source.seekBy(@offsetOf(elf.Elf32_Ehdr, native_field_name));
+        try file.seekBy(@offsetOf(elf.Elf32_Ehdr, native_field_name));
         const temp2 = std.mem.toBytes(temp);
-        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+        if (try file.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     }
     @field(self.header, field_name) = @intCast(val);
 }
 
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
-fn set_phdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+fn set_phdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, file: anytype) Error!void {
     if (index >= self.header.phnum) return Error.OutOfBoundField;
-    try parse_source.seekTo(self.header.phoff + self.header.phentsize * index);
+    try file.seekTo(self.header.phoff + self.header.phentsize * index);
     if (self.header.is_64) {
         const T = std.meta.fieldInfo(elf.Elf64_Phdr, @field(Phdr64Fields, field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-        try parse_source.seekBy(@offsetOf(elf.Elf64_Phdr, field_name));
+        try file.seekBy(@offsetOf(elf.Elf64_Phdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+        if (try file.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     } else {
         const T = std.meta.fieldInfo(elf.Elf32_Phdr, @field(Phdr32Fields, field_name)).type;
         var temp: T = @intCast(val);
         temp = if (self.header.endian != native_endian) @as(T, @byteSwap(temp)) else temp;
-        try parse_source.seekBy(@offsetOf(elf.Elf32_Phdr, field_name));
+        try file.seekBy(@offsetOf(elf.Elf32_Phdr, field_name));
         const temp2 = std.mem.toBytes(temp);
-        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+        if (try file.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     }
     // self.phdrs.items(@field(Phdr64Fields, field_name))[index] = @intCast(val);
 }
@@ -417,7 +420,7 @@ fn calc_new_off(self: *const Modder, top_idx: usize, size: u64) !u64 {
     return new_offset;
 }
 
-fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, parse_source: anytype) !void {
+fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, file: anytype) !void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const aligns = self.ranges.items(.alignment);
@@ -444,22 +447,22 @@ fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, parse_source: any
         const top_index = i + start_top_idx;
         const top_off_idx = self.top_offs[top_index];
         const top_range_idx = self.off_sort[top_off_idx];
-        try shift.shift_forward(parse_source, offs[top_range_idx], offs[top_range_idx] + fileszs[top_range_idx], self.adjustments[i]);
+        try shift.shift_forward(file, offs[top_range_idx], offs[top_range_idx] + fileszs[top_range_idx], self.adjustments[i]);
         const final_off_idx = if ((top_index + 1) == self.top_offs.len) self.ranges.len else self.top_offs[top_index + 1];
         for (top_off_idx..final_off_idx) |off_idx| {
             const index = self.off_sort[off_idx];
             offs[index] += self.adjustments[i];
-            try self.set_filerange_field(index, offs[index], .off, parse_source);
+            try self.set_filerange_field(index, offs[index], .off, file);
         }
     }
 }
 
-fn set_filerange_field(self: *Modder, index: usize, val: u64, comptime field: std.meta.FieldEnum(FileRange), parse_source: anytype) !void {
+fn set_filerange_field(self: *Modder, index: usize, val: u64, comptime field: std.meta.FieldEnum(FileRange), file: anytype) !void {
     switch (self.range_type(index)) {
         .SectionHeaderTable => {
             switch (field) {
                 .off => {
-                    try self.set_ehdr_field(val, "shoff", parse_source);
+                    try self.set_ehdr_field(val, "shoff", file);
                 },
                 else => return Error.FieldNotAdjustable,
             }
@@ -470,23 +473,23 @@ fn set_filerange_field(self: *Modder, index: usize, val: u64, comptime field: st
                 .addr => "sh_addr",
                 else => return Error.FieldNotAdjustable,
             };
-            try self.set_shdr_field(index, val, fieldname, parse_source);
+            try self.set_shdr_field(index, val, fieldname, file);
         },
         .ProgramHeader => {
             const temp = index - (self.header.shnum + 1);
             switch (field) {
                 .off => {
-                    try self.set_phdr_field(temp, val, "p_offset", parse_source);
+                    try self.set_phdr_field(temp, val, "p_offset", file);
                 },
                 .addr => {
-                    try self.set_phdr_field(temp, val, "p_vaddr", parse_source);
-                    try self.set_phdr_field(temp, val, "p_paddr", parse_source);
+                    try self.set_phdr_field(temp, val, "p_vaddr", file);
+                    try self.set_phdr_field(temp, val, "p_paddr", file);
                 },
                 .filesz => {
-                    try self.set_phdr_field(temp, val, "p_filesz", parse_source);
+                    try self.set_phdr_field(temp, val, "p_filesz", file);
                 },
                 .memsz => {
-                    try self.set_phdr_field(temp, val, "p_memsz", parse_source);
+                    try self.set_phdr_field(temp, val, "p_memsz", file);
                 },
                 else => return Error.FieldNotAdjustable,
             }
@@ -494,8 +497,9 @@ fn set_filerange_field(self: *Modder, index: usize, val: u64, comptime field: st
     }
 }
 
-// TODO: consider what happens when the original filesz and memsz are unequal.
-pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytype) Error!void {
+/// Create a cave of the given size at the specified location.
+/// assumes that edge was returned from self.get_cave_option(size), and that the file has not been modified since it was called.
+pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) Error!void {
     // NOTE: moving around the pheader table sounds like a bad idea.
     if (edge.top_idx == 0) return Error.CantExpandPhdr;
     const offs = self.ranges.items(.off);
@@ -508,7 +512,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
     const old_offset: u64 = offs[idx];
     const new_offset: u64 = if (edge.is_end) old_offset else try self.calc_new_off(edge.top_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < old_offset) size - (old_offset - new_offset) else size + (new_offset - old_offset);
-    try self.shift_forward(first_adjust, edge.top_idx + 1, parse_source);
+    try self.shift_forward(first_adjust, edge.top_idx + 1, file);
 
     if (!edge.is_end) {
         const top_off_idx = self.top_offs[edge.top_idx];
@@ -516,12 +520,12 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
 
         // TODO: consider the following
         // if (shoff_top_idx == edge.top_idx) {
-        //     try self.set_ehdr_field(self.header.shoff + new_offset + size - old_offset, "shoff", parse_source);
+        //     try self.set_ehdr_field(self.header.shoff + new_offset + size - old_offset, "shoff", file);
         // }
-        try shift.shift_forward(parse_source, old_offset, old_offset + fileszs[idx], first_adjust);
+        try shift.shift_forward(file, old_offset, old_offset + fileszs[idx], first_adjust);
 
         offs[idx] = new_offset;
-        try self.set_filerange_field(idx, offs[idx], .off, parse_source);
+        try self.set_filerange_field(idx, offs[idx], .off, file);
 
         for (top_off_idx + 1..final_off_idx) |off_idx| {
             const index = self.off_sort[off_idx];
@@ -529,49 +533,49 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
             //
             // if (offs[index] == offs[top_range_idx]) {
             //     if (index < self.header.phnum) {
-            //         try self.set_phdr_field(index, fileszs[index] + size, "p_filesz", parse_source);
-            //         try self.set_phdr_field(index, fileszs[index] + size, "p_memsz", parse_source);
-            //         try self.set_phdr_field(index, addrs[index] - size, "p_vaddr", parse_source);
-            //         try self.set_phdr_field(index, addrs[index] - size, "p_paddr", parse_source);
+            //         try self.set_phdr_field(index, fileszs[index] + size, "p_filesz", file);
+            //         try self.set_phdr_field(index, fileszs[index] + size, "p_memsz", file);
+            //         try self.set_phdr_field(index, addrs[index] - size, "p_vaddr", file);
+            //         try self.set_phdr_field(index, addrs[index] - size, "p_paddr", file);
             //         try self.set_phdr_field(index, new_offset, "p_offset");
             //     } else {
-            //         try self.set_shdr_field(index - self.header.phnum, fileszs[index] + size, "sh_size", parse_source);
-            //         try self.set_shdr_field(index - self.header.phnum, addrs[index] - size, "sh_addr", parse_source);
-            //         try self.set_shdr_field(index - self.header.phnum, new_offset, "sh_offset", parse_source);
+            //         try self.set_shdr_field(index - self.header.phnum, fileszs[index] + size, "sh_size", file);
+            //         try self.set_shdr_field(index - self.header.phnum, addrs[index] - size, "sh_addr", file);
+            //         try self.set_shdr_field(index - self.header.phnum, new_offset, "sh_offset", file);
             //     }
             //     fileszs[index] += size;
             //     addrs[index] -= size;
             //     offs[index] = new_offset;
             // } else {
             offs[index] = offs[index] + first_adjust;
-            try self.set_filerange_field(index, offs[index], .off, parse_source);
+            try self.set_filerange_field(index, offs[index], .off, file);
             // }
         }
         addrs[idx] -= size;
-        try self.set_filerange_field(idx, addrs[idx], .addr, parse_source);
+        try self.set_filerange_field(idx, addrs[idx], .addr, file);
     }
     fileszs[idx] += size;
     memszs[idx] += size;
-    // try self.set_filerange_field(idx, fileszs[idx], .filesz, parse_source)
-    // try self.set_filerange_field(idx, memszs[idx], .memsz, parse_source)
+    // try self.set_filerange_field(idx, fileszs[idx], .filesz, file)
+    // try self.set_filerange_field(idx, memszs[idx], .memsz, file)
     switch (self.range_type(idx)) {
         .ProgramHeader => {
-            try self.set_phdr_field(idx - (self.header.shnum + 1), fileszs[idx], "p_filesz", parse_source);
-            try self.set_phdr_field(idx - (self.header.shnum + 1), memszs[idx], "p_memsz", parse_source);
+            try self.set_phdr_field(idx - (self.header.shnum + 1), fileszs[idx], "p_filesz", file);
+            try self.set_phdr_field(idx - (self.header.shnum + 1), memszs[idx], "p_memsz", file);
         },
         .SectionHeaderTable => {}, // NOTE: This very much does not make sense.
         .SectionHeader => {
 
             // NOTE: This kind of does not make sense.
             // TODO: consider what to do with a NOBITS section.
-            try self.set_shdr_field(idx, fileszs[idx], "sh_size", parse_source);
+            try self.set_shdr_field(idx, fileszs[idx], "sh_size", file);
         },
     }
 
     // TODO: debug info?)
 }
 
-fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: FileRangeFlags, alignment: u64, off: u64, addr: u64, parse_source: anytype) Error!void {
+fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: FileRangeFlags, alignment: u64, off: u64, addr: u64, file: anytype) Error!void {
     const T = if (is_64) elf.Elf64_Phdr else elf.Elf32_Phdr;
     var new_phdr: T = .{
         .p_align = @intCast(alignment), // NOTE: this is sus
@@ -592,14 +596,14 @@ fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: Fil
         std.mem.byteSwapAllFields(T, &new_phdr);
     }
     const temp = std.mem.toBytes(new_phdr);
-    if (try parse_source.write(&temp) != @sizeOf(T)) return Error.UnexpectedEof;
+    if (try file.write(&temp) != @sizeOf(T)) return Error.UnexpectedEof;
 }
 
 // This still does not work!
 // Need to change the logic such that the top filerange containing the phdr_table and then within that top filerange extend
 // the specific filerange of the phdr_table.
 // This will only ever work if there is address space between the end of the phdr_table and the next segment.
-fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileRangeFlags, parse_source: anytype) Error!void {
+fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileRangeFlags, file: anytype) Error!void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const addrs = self.ranges.items(.addr);
@@ -635,16 +639,16 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
         return Error.NoSpacePastPhdrTable;
     }
 
-    try self.shift_forward(needed_size, phdr_top_idx + 1, parse_source);
-    try self.set_filerange_field(top_range_idx, fileszs[top_range_idx] + needed_size, .filesz, parse_source);
-    try self.set_filerange_field(top_range_idx, memszs[top_range_idx] + needed_size, .memsz, parse_source);
+    try self.shift_forward(needed_size, phdr_top_idx + 1, file);
+    try self.set_filerange_field(top_range_idx, fileszs[top_range_idx] + needed_size, .filesz, file);
+    try self.set_filerange_field(top_range_idx, memszs[top_range_idx] + needed_size, .memsz, file);
 
     if ((offs[phdr_range_idx] + fileszs[phdr_range_idx]) != (self.header.phoff + self.header.phentsize * self.header.phnum)) {
         return Error.PhdrTablePhdrNotFound;
     }
     std.debug.assert((offs[phdr_range_idx] + fileszs[phdr_range_idx]) == (self.header.phoff + self.header.phentsize * self.header.phnum));
     try shift.shift_forward(
-        parse_source,
+        file,
         self.header.phoff + self.header.phentsize * self.header.phnum,
         offs[top_range_idx] + fileszs[top_range_idx],
         needed_size,
@@ -652,19 +656,19 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     for (phdr_off_idx + 1..final_off_idx) |off_idx| {
         const index = self.off_sort[off_idx];
         offs[index] += needed_size;
-        try self.set_filerange_field(index, offs[index], .off, parse_source);
+        try self.set_filerange_field(index, offs[index], .off, file);
     }
     fileszs[phdr_range_idx] += self.header.phentsize;
-    try self.set_filerange_field(phdr_range_idx, fileszs[phdr_range_idx], .filesz, parse_source);
+    try self.set_filerange_field(phdr_range_idx, fileszs[phdr_range_idx], .filesz, file);
     memszs[phdr_range_idx] += self.header.phentsize;
-    try self.set_filerange_field(phdr_range_idx, memszs[phdr_range_idx], .memsz, parse_source);
+    try self.set_filerange_field(phdr_range_idx, memszs[phdr_range_idx], .memsz, file);
 
     const last_off_range_idx = self.off_sort[self.top_offs[self.top_offs.len - 1]];
     const max_off = offs[last_off_range_idx] + fileszs[last_off_range_idx];
-    if (max_off != try parse_source.getEndPos()) return Error.UnmappedRange;
+    if (max_off != try file.getEndPos()) return Error.UnmappedRange;
     const last_addr_range_idx = self.addr_sort[self.load_ranges[self.load_ranges.len - 1]];
     const max_addr = addrs[last_addr_range_idx] + memszs[last_addr_range_idx];
-    try parse_source.seekTo(self.header.phoff + self.header.phentsize * self.header.phnum);
+    try file.seekTo(self.header.phoff + self.header.phentsize * self.header.phnum);
     const alignment = 0x1000;
     const alignment_addend = blk: {
         if ((max_off % alignment) > (max_addr % alignment)) {
@@ -674,14 +678,14 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
         } else break :blk 0;
     };
     if (self.header.is_64) {
-        try self.set_new_phdr(true, size, flags, alignment, max_off, max_addr + alignment_addend, parse_source);
+        try self.set_new_phdr(true, size, flags, alignment, max_off, max_addr + alignment_addend, file);
     } else {
-        try self.set_new_phdr(false, size, flags, alignment, max_off, max_addr + alignment_addend, parse_source);
+        try self.set_new_phdr(false, size, flags, alignment, max_off, max_addr + alignment_addend, file);
     }
     self.header.phnum += 1;
-    try self.set_ehdr_field(self.header.phnum, "phnum", parse_source);
-    try parse_source.seekTo(max_off);
-    try parse_source.writer().writeByteNTimes(0, size);
+    try self.set_ehdr_field(self.header.phnum, "phnum", file);
+    try file.seekTo(max_off);
+    try file.writer().writeByteNTimes(0, size);
     // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
     self.off_sort = (try gpa.realloc(self.off_sort[0..self.ranges.len], self.ranges.len + 1)).ptr;
     self.off_sort[self.ranges.len] = self.ranges.len;
@@ -753,7 +757,9 @@ pub fn off_to_addr(self: *const Modder, off: u64) Error!u64 {
     return addrs[containnig_idx] + off - offs[containnig_idx];
 }
 
-pub fn cave_to_off(self: Modder, cave: SegEdge, size: u64) u64 {
+/// return the offset of the start of the cave described by `cave` and `size`.
+/// assumes that create_cave has been called with cave and size, and returned successfully.
+pub fn cave_to_off(self: *const Modder, cave: SegEdge, size: u64) u64 {
     const idx = self.off_sort[self.top_offs[cave.top_idx]];
     return self.ranges.items(.off)[idx] + if (cave.is_end) self.ranges.items(.filesz)[idx] - size else 0;
 }
@@ -762,7 +768,7 @@ fn off_to_top_idx(self: *const Modder, off: u64) usize {
     return std.sort.lowerBound(usize, self.top_offs, CompareContext{ .self = self, .lhs = off + 1 }, top_off_compareFn) - 1;
 }
 
-pub fn print_modelf(elf_modder: Modder) void {
+pub fn print_modelf(elf_modder: *const Modder) void {
     const offs = elf_modder.ranges.items(.off);
     const addrs = elf_modder.ranges.items(.addr);
     const fileszs = elf_modder.ranges.items(.filesz);
