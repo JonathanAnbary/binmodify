@@ -9,6 +9,7 @@ pub const Error: type = error{
     ArchEndianMismatch,
 };
 
+// NOTE: These are mostly copied from capstone, some of them are not yet implemented.
 pub const Arch: type = enum(u8) {
     ARM,
     ARM64,

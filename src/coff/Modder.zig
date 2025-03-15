@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const native_endian = builtin.target.cpu.arch.endian();
 
 const shift = @import("../shift.zig");
-const common = @import("../common.zig");
+const FileRangeFlags = @import("../file_range_flags.zig").FileRangeFlags;
 
 const Parsed = @import("Parsed.zig");
 
@@ -114,12 +114,12 @@ pub fn deinit(self: *Modder, gpa: std.mem.Allocator) void {
 
 // Get an identifier for the location within the file where additional data could be inserted.
 // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
-pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.FileRangeFlags) Error!?SecEdge {
+pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) Error!?SecEdge {
     var i = self.sechdrs.len;
     while (i > 0) {
         i -= 1;
         const sec_idx = self.off_sort[i];
-        const sec_flags = common.FileRangeFlags{ .read = self.sechdrs[sec_idx].flags.MEM_READ == 1, .write = self.sechdrs[sec_idx].flags.MEM_WRITE == 1, .execute = self.sechdrs[sec_idx].flags.MEM_EXECUTE == 1 };
+        const sec_flags = FileRangeFlags{ .read = self.sechdrs[sec_idx].flags.MEM_READ == 1, .write = self.sechdrs[sec_idx].flags.MEM_WRITE == 1, .execute = self.sechdrs[sec_idx].flags.MEM_EXECUTE == 1 };
         if (sec_flags != flags) continue;
         // NOTE: this assumes you dont have an upper bound on possible memory address.
         if ((self.sec_to_addr[sec_idx] == (self.sechdrs.len - 1)) or
@@ -292,7 +292,7 @@ test "create_cave same output" {
         const parsed = Parsed.init(coff);
         var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer coff_modder.deinit(std.testing.allocator);
-        const option = (try coff_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
+        const option = (try coff_modder.get_cave_option(wanted_size, .{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
         try coff_modder.create_cave(wanted_size, option, &stream);
     }
 

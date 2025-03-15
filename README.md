@@ -13,7 +13,7 @@ Together these features allow for writing to binary files as though they were te
 Usage
 =====
 
-Run `zig build` in order to build the command line application and the static library (you can read about the options at zig build --help).
+Run `zig build` in order to build the command line application and the static library.
 
 You can use `binmodify` via the zig build system by running:
 ```bash
@@ -37,14 +37,13 @@ and since it is not packaged via build.zig you will need cmake in order to build
 
 I suggest setting CC and CXX to zig-cc and zig-c++ respectivly and then following the instructions at [README.md](keystone/README.md).
 
-Test coverage is quite crap since Im lazy, in addition the PE tests have only been ran infrequently.
+Test coverage is quite crap since Im lazy, in addition the PE tests have only been ran infrequently due to wine being too difficult.
 
 Planned features
 ================
 
 These are the features I plan to add:
 
-- Macho support (currently only the Elf and PE formats are supported).
-- New file ranges creation (currently file ranges can be extended but not created) (* Currently on hold due to a cave existing past the phdr_table in elf).
-- Reference fixup for patches (currently instructions with relative references may be moved by patching).
-- General api improvments (currently its kind of annoying to insert a patch if you need to know where it will be placed ahead of time).
+- Macho support (currently only the Elf and PE formats are supported, might not be possible due to required signatures on macho).
+- New file ranges creation (currently file ranges can be extended but not created, This will require to move the phdr table in elf, which might not be easy).
+- General api improvments (Im only really using this in [binmodify_plug](https://github.com/JonathanAnbary/binmodify_plug) which makes the project very tightly coupled and probably blinds me to some better api design).

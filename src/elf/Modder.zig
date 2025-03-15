@@ -5,7 +5,7 @@ const builtin = @import("builtin");
 const native_endian = builtin.target.cpu.arch.endian();
 
 const shift = @import("../shift.zig");
-const common = @import("../common.zig");
+const FileRangeFlags = @import("../file_range_flags.zig").FileRangeFlags;
 const Parsed = @import("Parsed.zig");
 
 const p_flags_type = std.meta.fieldInfo(elf.Elf64_Phdr, @field(Phdr64Fields, "p_flags")).type;
@@ -95,7 +95,7 @@ const FileRange: type = struct {
     addr: u64, // TODO: should be nullable
     memsz: u64,
     alignment: u64,
-    flags: common.FileRangeFlags,
+    flags: FileRangeFlags,
 };
 
 const PartialHeader = struct {
@@ -136,7 +136,7 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
             .addr = shdr.sh_addr,
             .memsz = shdr.sh_size,
             .alignment = shdr.sh_addralign,
-            .flags = common.FileRangeFlags{},
+            .flags = .{},
         });
     }
     // TODO: consider first checking if its already contained in a range.
@@ -147,7 +147,7 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
         .addr = 0,
         .memsz = 0,
         .alignment = 0,
-        .flags = common.FileRangeFlags{},
+        .flags = .{},
     });
     var load_count: u32 = 0;
     const load_map = try gpa.alloc(bool, parsed.header.phnum);
@@ -166,7 +166,7 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, parse_source: anytype
             .addr = phdr.p_vaddr,
             .memsz = phdr.p_memsz,
             .alignment = phdr.p_align,
-            .flags = common.FileRangeFlags{
+            .flags = .{
                 .read = flags.PF_R,
                 .write = flags.PF_W,
                 .execute = flags.PF_X,
@@ -298,7 +298,7 @@ fn range_type(self: *const Modder, index: usize) RangeType {
 }
 
 // Get an identifier for the location within the file where additional data could be inserted.
-pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: common.FileRangeFlags) Error!?SegEdge {
+pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) Error!?SegEdge {
     const flagss = self.ranges.items(.flags);
     const addrs = self.ranges.items(.addr);
     const memszs = self.ranges.items(.memsz);
@@ -571,7 +571,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, parse_source: anytyp
     // TODO: debug info?)
 }
 
-fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: common.FileRangeFlags, alignment: u64, off: u64, addr: u64, parse_source: anytype) Error!void {
+fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: FileRangeFlags, alignment: u64, off: u64, addr: u64, parse_source: anytype) Error!void {
     const T = if (is_64) elf.Elf64_Phdr else elf.Elf32_Phdr;
     var new_phdr: T = .{
         .p_align = @intCast(alignment), // NOTE: this is sus
@@ -599,7 +599,7 @@ fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: com
 // Need to change the logic such that the top filerange containing the phdr_table and then within that top filerange extend
 // the specific filerange of the phdr_table.
 // This will only ever work if there is address space between the end of the phdr_table and the next segment.
-fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: common.FileRangeFlags, parse_source: anytype) Error!void {
+fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileRangeFlags, parse_source: anytype) Error!void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const addrs = self.ranges.items(.addr);
@@ -935,7 +935,7 @@ test "create cave same output" {
                 const parsed = try Parsed.init(&stream);
                 var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
                 defer elf_modder.deinit(std.testing.allocator);
-                const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
+                const option = (try elf_modder.get_cave_option(wanted_size, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
                 try elf_modder.create_cave(wanted_size, option, &stream);
             }
 
@@ -1016,7 +1016,7 @@ test "repeated cave expansion equal to single cave" {
         var temp_sum: u32 = 0;
         for (0..10) |_| {
             const wanted_size = prng.random().intRangeAtMost(u8, 10, 100);
-            const option = (try elf_modder.get_cave_option(wanted_size, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
+            const option = (try elf_modder.get_cave_option(wanted_size, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
             try elf_modder.create_cave(wanted_size, option, &stream);
             temp_sum += wanted_size;
         }
@@ -1029,7 +1029,7 @@ test "repeated cave expansion equal to single cave" {
         const parsed = try Parsed.init(&stream);
         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        const option = (try elf_modder.get_cave_option(sum, common.FileRangeFlags{ .execute = true, .read = true })) orelse return error.NoCaveOption;
+        const option = (try elf_modder.get_cave_option(sum, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
         try elf_modder.create_cave(sum, option, &stream);
     }
     try f_repeated.seekTo(0);

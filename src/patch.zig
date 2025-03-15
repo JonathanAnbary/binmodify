@@ -6,7 +6,6 @@ const ElfModder = @import("elf/Modder.zig");
 const ElfParsed = @import("elf/Parsed.zig");
 const CoffModder = @import("coff/Modder.zig");
 const CoffParsed = @import("coff/Parsed.zig");
-const common = @import("common.zig");
 const ctl_asm = @import("ctl_asm.zig");
 
 pub const PatchInfo: type = extern struct {
@@ -14,6 +13,9 @@ pub const PatchInfo: type = extern struct {
     cave_size: u64,
 };
 
+/// Provides pure_patch() which allows for inserting inline hooks in the given executable.
+/// Disasm needs to expose min_insn_size(self: *Self, size: u64, code: []const u8, addr: u64) u64, which returns size rounded up to the nearest instruction.
+/// Modder needs to expose addr_to_off(addr: u64), get_cave_option(size: u64, file_range_flags: FileRangeFlags), create_cave(cave_size: u64, cave_option: ret<get_cave_option>, stream: anytype), cave_to_off(cave_option: ret<get_cave_option>, cave_size: u64), off_to_addr(off:u64).
 pub fn Patcher(Modder: type, Disasm: type) type {
     return struct {
         modder: Modder,
@@ -23,6 +25,8 @@ pub fn Patcher(Modder: type, Disasm: type) type {
         const Self = @This();
         pub const Error = Modder.Error || Disasm.Error || arch.Error;
 
+        /// assumes that `parsed` contains information that is true for `reader`.
+        /// `parsed` must provde `get_arch()`, `get_mode()`, `get_endian()` and be compatible with the `Modder` init function.
         pub fn init(
             gpa: std.mem.Allocator,
             reader: anytype,
@@ -49,6 +53,17 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             self.disasm.deinit();
         }
 
+        /// insert an inline hook at addresss `addr` which transfers execution to a cave containing the bytes at patch, the bytes that were overridden and then transfers control back to after the hook.
+        /// assume that address is the start of an instruction within the `stream`, and that the `stream` contains the same data as the `reader` passed to init.
+        /// returns the cave which was created to hold the patch.
+        /// example:
+        /// before hook:
+        ///     <app_inst0><app_inst1><app_inst2><app_inst3>
+        /// after hook:
+        ///     <app_inst0><branch_inst1><app_inst2><app_inst3>
+        ///                 |             L----------┐
+        ///                 L <patch><app_inst1><branch_inst1>
+        /// The simplest way to think of it is that you are adding the patch bytes to the program in insert mode.
         pub fn pure_patch(self: *Self, addr: u64, patch: []const u8, stream: anytype) !PatchInfo {
             // TODO: think about this 20 (pull out of my ass as the maximum partial instruction size that might be needed).
             var buff: [ctl_asm.CtlFlowAssembler.MAX_CTL_FLOW + 20]u8 = undefined;
@@ -62,17 +77,10 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             const insn_to_move_siz = self.disasm.min_insn_size(ctl_transfer_size, buff[0..max], addr);
             std.debug.assert(insn_to_move_siz < buff.len);
             const cave_size = patch.len + insn_to_move_siz + ctl_transfer_size;
-            const cave_option = (try self.modder.get_cave_option(cave_size, common.FileRangeFlags{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
-            // std.debug.print("\ncave_option = {}\n", .{cave_option});
+            const cave_option = (try self.modder.get_cave_option(cave_size, .{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
             try self.modder.create_cave(cave_size, cave_option, stream);
-            // if (T == CoffModder) {
-            //     for (self.modder.sechdrs) |*sechdr| {
-            //         std.debug.print("{X} - {X} - {X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_size, sechdr.pointer_to_raw_data, sechdr.size_of_raw_data });
-            //     }
-            // }
 
             const off_after_patch = try self.modder.addr_to_off(addr);
-            // TODO: mismatch between filesz and memsz is gonna screw me over.
             const cave_off = self.modder.cave_to_off(cave_option, cave_size);
             const cave_addr = try self.modder.off_to_addr(cave_off);
             try stream.seekTo(cave_off);

@@ -7,7 +7,7 @@ pub const ElfParsed = @import("elf/Parsed.zig");
 pub const CoffModder = @import("coff/Modder.zig");
 pub const CoffParsed = @import("coff/Parsed.zig");
 pub const arch = @import("arch.zig");
-pub const common = @import("common.zig");
+pub const FileRangeFlags = @import("file_range_flags.zig").FileRangeFlags;
 
 pub const Disasm = @import("capstone.zig").Disasm;
 

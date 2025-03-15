@@ -54,7 +54,6 @@ pub fn build(b: *std.Build) void {
         .pic = pic,
     });
 
-    // clib_mod.addImport("binmodify", lib_mod);
     clib_mod.linkLibrary(capstone_dependency.artifact("capstone"));
 
     const clib = std.Build.Step.Compile.create(b, .{
