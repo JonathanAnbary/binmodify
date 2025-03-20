@@ -252,59 +252,75 @@ pub fn cave_to_off(self: Modder, cave: SecEdge, size: u64) u64 {
     return self.sechdrs[cave.sec_idx].pointer_to_raw_data + if (cave.is_end) self.sechdrs[cave.sec_idx].size_of_raw_data - size else 0;
 }
 
-test "create_cave same output" {
+test "create cave same output" {
     if (builtin.os.tag != .windows) {
         return error.SkipZigTest;
     }
-
     const test_src_path = "./tests/hello_world.zig";
-    const test_with_cave = "./create_cave_same_output_coff.exe";
+    const test_with_cave_prefix = "./create_cave_same_output_coff.exe";
     const cwd: std.fs.Dir = std.fs.cwd();
+    const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
+    const targets = &.{ "x86_64-windows", "x86-windows" };
 
-    {
-        const build_src_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86_64-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_src_result.stdout);
-        defer std.testing.allocator.free(build_src_result.stderr);
-        try std.testing.expect(build_src_result.term == .Exited);
-        try std.testing.expect(build_src_result.stderr.len == 0);
+    var maybe_no_cave_results: ?std.process.Child.RunResult = null;
+    defer {
+        if (maybe_no_cave_results) |no_cave_result| {
+            std.testing.allocator.free(no_cave_result.stdout);
+            std.testing.allocator.free(no_cave_result.stderr);
+        }
     }
 
-    // check regular output.
-    const no_cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(no_cave_result.stdout);
-    defer std.testing.allocator.free(no_cave_result.stderr);
+    inline for (optimzes) |optimize| {
+        inline for (targets) |target| {
+            const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize;
+            {
+                const build_src_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=coff", "-femit-bin=" ++ test_with_cave_filename[2..], test_src_path },
+                });
+                defer std.testing.allocator.free(build_src_result.stdout);
+                defer std.testing.allocator.free(build_src_result.stderr);
+                try std.testing.expect(build_src_result.term == .Exited);
+                try std.testing.expect(build_src_result.stderr.len == 0);
+            }
 
-    {
-        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
-        defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
-        const wanted_size = 0x100;
-        const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
-        defer std.testing.allocator.free(data);
-        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
-        const coff = try std.coff.Coff.init(data, false);
-        const parsed = Parsed.init(coff);
-        var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
-        defer coff_modder.deinit(std.testing.allocator);
-        const option = (try coff_modder.get_cave_option(wanted_size, .{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
-        try coff_modder.create_cave(wanted_size, option, &stream);
+            if (maybe_no_cave_results == null) {
+                // check regular output.
+                maybe_no_cave_results = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{test_with_cave_filename},
+                });
+            }
+            const no_cave_result = maybe_no_cave_results.?;
+
+            {
+                var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
+                defer f.close();
+                var stream = std.io.StreamSource{ .file = f };
+                const wanted_size = 0x100;
+                const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
+                defer std.testing.allocator.free(data);
+                try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
+                const coff = try std.coff.Coff.init(data, false);
+                const parsed = Parsed.init(coff);
+                var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+                defer coff_modder.deinit(std.testing.allocator);
+                const option = (try coff_modder.get_cave_option(wanted_size, .{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
+                try coff_modder.create_cave(wanted_size, option, &stream);
+            }
+
+            // check output with a cave
+            const cave_result = try std.process.Child.run(.{
+                .allocator = std.testing.allocator,
+                .argv = &[_][]const u8{test_with_cave_filename},
+            });
+            defer std.testing.allocator.free(cave_result.stdout);
+            defer std.testing.allocator.free(cave_result.stderr);
+            try std.testing.expect(cave_result.term == .Exited);
+            try std.testing.expect(no_cave_result.term == .Exited);
+            try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
+            try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
+            try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+        }
     }
-
-    // check output with a cave
-    const cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(cave_result.stdout);
-    defer std.testing.allocator.free(cave_result.stderr);
-    try std.testing.expect(cave_result.term == .Exited);
-    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-    try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-    try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
 }

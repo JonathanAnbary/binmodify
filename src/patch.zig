@@ -23,7 +23,7 @@ pub fn Patcher(Modder: type, Disasm: type) type {
         disasm: Disasm,
 
         const Self = @This();
-        pub const Error = Modder.Error || Disasm.Error || arch.Error;
+        pub const Error = error{ NoFreeSpace, UnexpectedEof };
 
         /// assumes that `parsed` contains information that is true for `reader`.
         /// `parsed` must provde `get_arch()`, `get_mode()`, `get_endian()` and be compatible with the `Modder` init function.
@@ -31,7 +31,7 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             gpa: std.mem.Allocator,
             reader: anytype,
             parsed: anytype,
-        ) Error!Self {
+        ) !Self {
             var modder: Modder = try Modder.init(gpa, parsed, reader);
             errdefer modder.deinit(gpa);
             const farch = try parsed.get_arch();
@@ -162,12 +162,11 @@ test "elf nop patch no difference" {
             {
                 var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
                 defer f.close();
-                var stream = std.io.StreamSource{ .file = f };
                 const patch = nop ** 0x900;
-                const parsed = try ElfParsed.init(&stream);
-                var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
+                const parsed = try ElfParsed.init(&f);
+                var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
                 defer patcher.deinit(std.testing.allocator);
-                _ = try patcher.pure_patch(parsed.header.entry, &patch, &stream);
+                _ = try patcher.pure_patch(parsed.header.entry, &patch, &f);
             }
 
             // check output with a cave
@@ -216,16 +215,15 @@ test "coff nop patch no difference" {
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
         const patch = [_]u8{0x90} ** 0x90;
-        const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
+        const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
         defer std.testing.allocator.free(data);
-        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
+        try std.testing.expectEqual(f.getEndPos(), try f.read(data));
         const coff = try std.coff.Coff.init(data, false);
         const parsed = CoffParsed.init(coff);
-        var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
+        var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        try patcher.pure_patch(0x1400011BB, &patch, &stream);
+        _ = try patcher.pure_patch(0x1400011BB, &patch, &f);
     }
 
     // check output with a cave
@@ -310,15 +308,14 @@ test "elf fizzbuzz fizz always" {
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
-        try stream.seekTo(0xD94);
+        try f.seekTo(0xD94);
         const overwrite = [_]u8{0x83}; // changing jz to jae
-        try std.testing.expectEqual(overwrite.len, try stream.write(&overwrite));
+        try std.testing.expectEqual(overwrite.len, try f.write(&overwrite));
         const patch = [_]u8{ 0xFE, 0xC3 } ** 0x2; // inc bl; inc bl;
-        const parsed = try ElfParsed.init(&stream);
-        var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
+        const parsed = try ElfParsed.init(&f);
+        var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        _ = try patcher.pure_patch(0x1001D99, &patch, &stream);
+        _ = try patcher.pure_patch(0x1001D99, &patch, &f);
     }
 
     // check output with a cave
@@ -403,20 +400,19 @@ test "coff fizzbuzz fizz always" {
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
-        try stream.seekTo(0x4E1);
+        try f.seekTo(0x4E1);
         const overwrite = [_]u8{0x83}; // changing je to jae
-        try std.testing.expectEqual(overwrite.len, try stream.write(&overwrite));
-        try stream.seekTo(0);
+        try std.testing.expectEqual(overwrite.len, try f.write(&overwrite));
+        try f.seekTo(0);
         const patch = [_]u8{ 0x41, 0xFE, 0xC5 } ** 0x2; // inc r13b; inc r13b;
-        const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
+        const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
         defer std.testing.allocator.free(data);
-        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
+        try std.testing.expectEqual(f.getEndPos(), try f.read(data));
         const coff = try std.coff.Coff.init(data, false);
         const parsed = CoffParsed.init(coff);
-        var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &stream, &parsed);
+        var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        try patcher.pure_patch(0x1400010E6, &patch, &stream);
+        _ = try patcher.pure_patch(0x1400010E6, &patch, &f);
     }
 
     // check output with a cave

@@ -32,6 +32,7 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
 
     var args = try std.process.argsWithAllocator(alloc);
+    defer args.deinit();
     _ = args.next() orelse return arg_err(stdout.any());
 
     const to_patch = args.next() orelse return arg_err(stdout.any());

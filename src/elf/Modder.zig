@@ -55,7 +55,7 @@ pub const Error = error{
     FieldNotAdjustable,
     PhdrTablePhdrNotFound,
     NoSpacePastPhdrTable,
-} || shift.Error || ElfError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError;
+} || ElfError;
 
 pub const SegEdge: type = struct {
     top_idx: usize,
@@ -126,7 +126,7 @@ load_ranges: []usize,
 
 const Modder = @This();
 
-pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) Error!Modder {
+pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modder {
     var ranges = std.MultiArrayList(FileRange){};
     errdefer ranges.deinit(gpa);
     // + 1 for the sechdr table which appears to not be contained in any section/segment.
@@ -301,7 +301,7 @@ fn range_type(self: *const Modder, index: usize) RangeType {
 }
 
 /// Get information for the location within the file where additional data could be inserted.
-pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) Error!?SegEdge {
+pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) !?SegEdge {
     const flagss = self.ranges.items(.flags);
     const addrs = self.ranges.items(.addr);
     const memszs = self.ranges.items(.memsz);
@@ -330,7 +330,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
     return null;
 }
 
-fn set_shdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, file: anytype) Error!void {
+fn set_shdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, file: anytype) !void {
     if (index >= self.header.shnum) return Error.OutOfBoundField;
     try file.seekTo(self.header.shoff + self.header.shentsize * index);
     if (self.header.is_64) {
@@ -351,7 +351,7 @@ fn set_shdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []
     // self.shdrs.items(@field(Shdr64Fields, field_name))[index] = @intCast(val);
 }
 
-fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, file: anytype) Error!void {
+fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, file: anytype) !void {
     const native_field_name = "e_" ++ field_name;
     try file.seekTo(0);
     if (self.header.is_64) {
@@ -374,7 +374,7 @@ fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, file
 
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
-fn set_phdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, file: anytype) Error!void {
+fn set_phdr_field(self: *Modder, index: usize, val: u64, comptime field_name: []const u8, file: anytype) !void {
     if (index >= self.header.phnum) return Error.OutOfBoundField;
     try file.seekTo(self.header.phoff + self.header.phentsize * index);
     if (self.header.is_64) {
@@ -499,7 +499,7 @@ fn set_filerange_field(self: *Modder, index: usize, val: u64, comptime field: st
 
 /// Create a cave of the given size at the specified location.
 /// assumes that edge was returned from self.get_cave_option(size), and that the file has not been modified since it was called.
-pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) Error!void {
+pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) !void {
     // NOTE: moving around the pheader table sounds like a bad idea.
     if (edge.top_idx == 0) return Error.CantExpandPhdr;
     const offs = self.ranges.items(.off);
@@ -575,7 +575,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) Error
     // TODO: debug info?)
 }
 
-fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: FileRangeFlags, alignment: u64, off: u64, addr: u64, file: anytype) Error!void {
+fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: FileRangeFlags, alignment: u64, off: u64, addr: u64, file: anytype) !void {
     const T = if (is_64) elf.Elf64_Phdr else elf.Elf32_Phdr;
     var new_phdr: T = .{
         .p_align = @intCast(alignment), // NOTE: this is sus
@@ -603,7 +603,7 @@ fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: Fil
 // Need to change the logic such that the top filerange containing the phdr_table and then within that top filerange extend
 // the specific filerange of the phdr_table.
 // This will only ever work if there is address space between the end of the phdr_table and the next segment.
-fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileRangeFlags, file: anytype) Error!void {
+fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileRangeFlags, file: anytype) !void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const addrs = self.ranges.items(.addr);
@@ -721,7 +721,7 @@ fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
     return std.math.order(context.lhs, context.self.ranges.items(.addr)[context.self.addr_sort[rhs]]);
 }
 
-pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
+pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
     const offs = self.ranges.items(.off);
     const addrs = self.ranges.items(.addr);
     const fileszs = self.ranges.items(.filesz);
@@ -745,7 +745,7 @@ fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
     return std.math.order(context.lhs, context.self.ranges.items(.off)[rhs]);
 }
 
-pub fn off_to_addr(self: *const Modder, off: u64) Error!u64 {
+pub fn off_to_addr(self: *const Modder, off: u64) !u64 {
     const offs = self.ranges.items(.off);
     const addrs = self.ranges.items(.addr);
     const fileszs = self.ranges.items(.filesz);
@@ -893,7 +893,7 @@ pub fn print_modelf(elf_modder: *const Modder) void {
 
 test "create cave same output" {
     if (builtin.os.tag != .linux) {
-        error.SkipZigTest;
+        return error.SkipZigTest;
     }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave_prefix = "./create_cave_same_output_elf";
@@ -936,13 +936,12 @@ test "create cave same output" {
             {
                 var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
                 defer f.close();
-                var stream = std.io.StreamSource{ .file = f };
                 const wanted_size = 0xfff;
-                const parsed = try Parsed.init(&stream);
-                var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+                const parsed = try Parsed.init(&f);
+                var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &f);
                 defer elf_modder.deinit(std.testing.allocator);
                 const option = (try elf_modder.get_cave_option(wanted_size, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
-                try elf_modder.create_cave(wanted_size, option, &stream);
+                try elf_modder.create_cave(wanted_size, option, &f);
             }
 
             // check output with a cave
@@ -963,7 +962,7 @@ test "create cave same output" {
 
 test "corrupted elf (non containied overlapping ranges)" {
     if (builtin.os.tag != .linux) {
-        error.SkipZigTest;
+        return error.SkipZigTest;
     }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./corrupted_elf";
@@ -982,17 +981,16 @@ test "corrupted elf (non containied overlapping ranges)" {
 
     var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
     defer f.close();
-    var stream = std.io.StreamSource{ .file = f };
-    try stream.seekTo(0x98);
+    try f.seekTo(0x98);
     const patch = std.mem.toBytes(@as(u64, 0xAF5));
-    try std.testing.expectEqual(patch.len, try stream.write(&patch));
-    const parsed = try Parsed.init(&stream);
-    try std.testing.expectError(Error.IntersectingFileRanges, Modder.init(std.testing.allocator, &parsed, &stream));
+    try std.testing.expectEqual(patch.len, try f.write(&patch));
+    const parsed = try Parsed.init(&f);
+    try std.testing.expectError(Error.IntersectingFileRanges, Modder.init(std.testing.allocator, &parsed, &f));
 }
 
 test "repeated cave expansion equal to single cave" {
     if (builtin.os.tag != .linux) {
-        error.SkipZigTest;
+        return error.SkipZigTest;
     }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_repeated_cave = "./create_repeated_cave_same_output_elf";
@@ -1015,15 +1013,14 @@ test "repeated cave expansion equal to single cave" {
     defer f_repeated.close();
     const sum = blk: {
         var prng = std.Random.DefaultPrng.init(42);
-        var stream = std.io.StreamSource{ .file = f_repeated };
-        const parsed = try Parsed.init(&stream);
-        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+        const parsed = try Parsed.init(&f_repeated);
+        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &f_repeated);
         defer elf_modder.deinit(std.testing.allocator);
         var temp_sum: u32 = 0;
         for (0..10) |_| {
             const wanted_size = prng.random().intRangeAtMost(u8, 10, 100);
             const option = (try elf_modder.get_cave_option(wanted_size, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
-            try elf_modder.create_cave(wanted_size, option, &stream);
+            try elf_modder.create_cave(wanted_size, option, &f_repeated);
             temp_sum += wanted_size;
         }
         break :blk temp_sum;
@@ -1031,12 +1028,11 @@ test "repeated cave expansion equal to single cave" {
     var f_non_repeated = try cwd.openFile(test_with_non_repeated_cave, .{ .mode = .read_write });
     defer f_non_repeated.close();
     {
-        var stream = std.io.StreamSource{ .file = f_non_repeated };
-        const parsed = try Parsed.init(&stream);
-        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+        const parsed = try Parsed.init(&f_non_repeated);
+        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &f_non_repeated);
         defer elf_modder.deinit(std.testing.allocator);
         const option = (try elf_modder.get_cave_option(sum, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
-        try elf_modder.create_cave(sum, option, &stream);
+        try elf_modder.create_cave(sum, option, &f_non_repeated);
     }
     try f_repeated.seekTo(0);
     try f_non_repeated.seekTo(0);
