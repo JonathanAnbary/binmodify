@@ -726,15 +726,17 @@ pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
     const addrs = self.ranges.items(.addr);
     const fileszs = self.ranges.items(.filesz);
     const memszs = self.ranges.items(.memsz);
-    const containnig_idx = self.addr_to_idx(addr);
+    const containnig_idx = try self.addr_to_idx(addr);
     if (addr >= (addrs[containnig_idx] + memszs[containnig_idx])) return Error.AddrNotMapped;
     const potenital_off = offs[containnig_idx] + addr - addrs[containnig_idx];
     if (potenital_off >= (offs[containnig_idx] + fileszs[containnig_idx])) return Error.NoMatchingOffset;
     return potenital_off;
 }
 
-fn addr_to_idx(self: *const Modder, addr: u64) usize {
-    return self.addr_sort[self.load_ranges[std.sort.lowerBound(usize, self.load_ranges, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1]];
+fn addr_to_idx(self: *const Modder, addr: u64) !usize {
+    const lower_bound = std.sort.lowerBound(usize, self.load_ranges, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
+    if (lower_bound == 0) return Error.AddrNotMapped;
+    return self.addr_sort[self.load_ranges[lower_bound - 1]];
 }
 
 fn top_off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
@@ -892,23 +894,29 @@ pub fn print_modelf(elf_modder: *const Modder) void {
 }
 
 test "create cave same output" {
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave_prefix = "./create_cave_same_output_elf";
+    const native_compile_path = "./elf_cave_hello_world";
     const cwd: std.fs.Dir = std.fs.cwd();
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
     const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux", "arm-linux" };
     const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64", "qemu-arm" };
-
-    var maybe_no_cave_results: ?std.process.Child.RunResult = null;
-    defer {
-        if (maybe_no_cave_results) |no_cave_result| {
-            std.testing.allocator.free(no_cave_result.stdout);
-            std.testing.allocator.free(no_cave_result.stderr);
-        }
+    {
+        const build_native_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_native_result.stdout);
+        defer std.testing.allocator.free(build_native_result.stderr);
+        try std.testing.expect(build_native_result.term == .Exited);
     }
+    const no_cave_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{native_compile_path},
+    });
+    defer std.testing.allocator.free(no_cave_result.stdout);
+    defer std.testing.allocator.free(no_cave_result.stderr);
+    try std.testing.expect(no_cave_result.term == .Exited);
 
     inline for (optimzes) |optimize| {
         inline for (targets, qemus) |target, qemu| {
@@ -924,15 +932,6 @@ test "create cave same output" {
                 try std.testing.expect(build_src_result.stderr.len == 0);
             }
 
-            if (maybe_no_cave_results == null) {
-                // check regular output.
-                maybe_no_cave_results = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{test_with_cave_filename},
-                });
-            }
-            const no_cave_result = maybe_no_cave_results.?;
-
             {
                 var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
                 defer f.close();
@@ -944,26 +943,29 @@ test "create cave same output" {
                 try elf_modder.create_cave(wanted_size, option, &f);
             }
 
-            // check output with a cave
-            const cave_result = try std.process.Child.run(.{
-                .allocator = std.testing.allocator,
-                .argv = &[_][]const u8{ qemu, test_with_cave_filename },
-            });
-            defer std.testing.allocator.free(cave_result.stdout);
-            defer std.testing.allocator.free(cave_result.stderr);
-            try std.testing.expect(cave_result.term == .Exited);
-            try std.testing.expect(no_cave_result.term == .Exited);
-            try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-            try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-            try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+            if (builtin.os.tag == .linux) {
+                // check output with a cave
+                const cave_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{ qemu, test_with_cave_filename },
+                });
+                defer std.testing.allocator.free(cave_result.stdout);
+                defer std.testing.allocator.free(cave_result.stderr);
+                try std.testing.expect(cave_result.term == .Exited);
+                try std.testing.expect(no_cave_result.term == .Exited);
+                try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
+                try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
+                try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+            }
         }
+    }
+
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
     }
 }
 
 test "corrupted elf (non containied overlapping ranges)" {
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./corrupted_elf";
     const cwd: std.fs.Dir = std.fs.cwd();
@@ -989,9 +991,6 @@ test "corrupted elf (non containied overlapping ranges)" {
 }
 
 test "repeated cave expansion equal to single cave" {
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_repeated_cave = "./create_repeated_cave_same_output_elf";
     const test_with_non_repeated_cave = "./create_non_repeated_cave_same_output_elf";

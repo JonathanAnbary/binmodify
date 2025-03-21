@@ -116,24 +116,31 @@ const CoffModder = @import("coff/Modder.zig");
 const CoffParsed = @import("coff/Parsed.zig");
 
 test "elf nop patch no difference" {
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_patch_prefix = "./elf_nop_patch_no_difference";
+    const native_compile_path = "./elf_nop_hello_world";
     const cwd: std.fs.Dir = std.fs.cwd();
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
     const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux", "arm-linux" };
     const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64", "qemu-arm" };
     const nops = &.{ [_]u8{0x90}, [_]u8{0x90}, [_]u8{ 0x1F, 0x20, 0x03, 0xD5 }, [_]u8{ 0xE1, 0xA0, 0x00, 0x00 } };
 
-    var maybe_no_patch_result: ?std.process.Child.RunResult = null;
-    defer {
-        if (maybe_no_patch_result) |no_patch_result| {
-            std.testing.allocator.free(no_patch_result.stdout);
-            std.testing.allocator.free(no_patch_result.stderr);
-        }
+    {
+        const build_native_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_native_result.stdout);
+        defer std.testing.allocator.free(build_native_result.stderr);
+        try std.testing.expect(build_native_result.term == .Exited);
     }
+    const no_patch_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{native_compile_path},
+    });
+    defer std.testing.allocator.free(no_patch_result.stdout);
+    defer std.testing.allocator.free(no_patch_result.stderr);
+    try std.testing.expect(no_patch_result.term == .Exited);
 
     inline for (optimzes) |optimize| {
         inline for (targets, qemus, nops) |target, qemu, nop| {
@@ -150,15 +157,6 @@ test "elf nop patch no difference" {
                 try std.testing.expect(build_src_result.stderr.len == 0);
             }
 
-            if (maybe_no_patch_result == null) {
-                // check regular output.
-                maybe_no_patch_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{test_with_patch_path},
-                });
-            }
-            const no_patch_result = maybe_no_patch_result.?;
-
             {
                 var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
                 defer f.close();
@@ -169,81 +167,104 @@ test "elf nop patch no difference" {
                 _ = try patcher.pure_patch(parsed.header.entry, &patch, &f);
             }
 
-            // check output with a cave
-            const patch_result = try std.process.Child.run(.{
-                .allocator = std.testing.allocator,
-                .argv = &[_][]const u8{ qemu, test_with_patch_path },
-            });
-            defer std.testing.allocator.free(patch_result.stdout);
-            defer std.testing.allocator.free(patch_result.stderr);
-            try std.testing.expect(patch_result.term == .Exited);
-            try std.testing.expect(no_patch_result.term == .Exited);
-            try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
-            try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
-            try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
+            if (builtin.os.tag == .linux) {
+                // check output with a cave
+                const patch_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{ qemu, test_with_patch_path },
+                });
+                defer std.testing.allocator.free(patch_result.stdout);
+                defer std.testing.allocator.free(patch_result.stderr);
+                try std.testing.expect(patch_result.term == .Exited);
+                try std.testing.expect(no_patch_result.term == .Exited);
+                try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
+                try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
+                try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
+            }
         }
+    }
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
     }
 }
 
 test "coff nop patch no difference" {
-    if (builtin.os.tag != .windows) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
-    const test_with_patch_path = "./coff_nop_patch_no_difference.exe";
+    const test_with_patch_prefix = "./coff_nop_patch_no_difference";
+    const native_compile_path = "./coff_nop_hello_world";
     const cwd: std.fs.Dir = std.fs.cwd();
+    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "Debug" }; // ReleaseSafe seems to be generated without large caves.
+    const targets = &.{ "x86_64-windows", "x86-windows" };
+    const nops = &.{ [_]u8{0x90}, [_]u8{0x90} };
 
     {
-        const build_src_result = try std.process.Child.run(.{
+        const build_native_result = try std.process.Child.run(.{
             .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-target", "x86_64-windows", "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
         });
-        defer std.testing.allocator.free(build_src_result.stdout);
-        defer std.testing.allocator.free(build_src_result.stderr);
-        try std.testing.expect(build_src_result.term == .Exited);
-        try std.testing.expect(build_src_result.stderr.len == 0);
+        defer std.testing.allocator.free(build_native_result.stdout);
+        defer std.testing.allocator.free(build_native_result.stderr);
+        try std.testing.expect(build_native_result.term == .Exited);
     }
-
-    // check regular output.
     const no_patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
+        .argv = &[_][]const u8{native_compile_path},
     });
     defer std.testing.allocator.free(no_patch_result.stdout);
     defer std.testing.allocator.free(no_patch_result.stderr);
-
-    {
-        var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
-        defer f.close();
-        const patch = [_]u8{0x90} ** 0x90;
-        const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
-        defer std.testing.allocator.free(data);
-        try std.testing.expectEqual(f.getEndPos(), try f.read(data));
-        const coff = try std.coff.Coff.init(data, false);
-        const parsed = CoffParsed.init(coff);
-        var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
-        defer patcher.deinit(std.testing.allocator);
-        _ = try patcher.pure_patch(0x1400011BB, &patch, &f);
-    }
-
-    // check output with a cave
-    const patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
-    });
-    defer std.testing.allocator.free(patch_result.stdout);
-    defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expect(patch_result.term == .Exited);
     try std.testing.expect(no_patch_result.term == .Exited);
-    try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
-    try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
-    try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
+
+    inline for (optimzes) |optimize| {
+        inline for (targets, nops) |target, nop| {
+            const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize ++ ".exe";
+
+            {
+                const build_src_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+                });
+                defer std.testing.allocator.free(build_src_result.stdout);
+                defer std.testing.allocator.free(build_src_result.stderr);
+                try std.testing.expect(build_src_result.term == .Exited);
+                try std.testing.expect(build_src_result.stderr.len == 0);
+            }
+
+            {
+                var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
+                defer f.close();
+                const patch = nop ** 50;
+                const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
+                defer std.testing.allocator.free(data);
+                try std.testing.expectEqual(f.getEndPos(), try f.read(data));
+                const coff = try std.coff.Coff.init(data, false);
+                const parsed = CoffParsed.init(coff);
+                var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
+                defer patcher.deinit(std.testing.allocator);
+                _ = try patcher.pure_patch(parsed.coff.getImageBase() + parsed.coff.getOptionalHeader().address_of_entry_point, &patch, &f);
+            }
+
+            if (builtin.os.tag == .windows) {
+                // check output with a cave
+                const patch_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{test_with_patch_path},
+                });
+                defer std.testing.allocator.free(patch_result.stdout);
+                defer std.testing.allocator.free(patch_result.stderr);
+                try std.testing.expect(patch_result.term == .Exited);
+                try std.testing.expect(no_patch_result.term == .Exited);
+                try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
+                try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
+                try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
+            }
+        }
+    }
+    if (builtin.os.tag != .windows) {
+        return error.SkipZigTest;
+    }
 }
 
 test "elf fizzbuzz fizz always" {
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/fizzbuzz.zig";
     const test_with_patch_path = "./elf_fizzbuzz_fizz_always";
     const cwd: std.fs.Dir = std.fs.cwd();
@@ -297,14 +318,6 @@ test "elf fizzbuzz fizz always" {
         \\
     ;
 
-    // check regular output.
-    const no_patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
-    });
-    defer std.testing.allocator.free(no_patch_result.stdout);
-    defer std.testing.allocator.free(no_patch_result.stderr);
-
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
@@ -318,6 +331,9 @@ test "elf fizzbuzz fizz always" {
         _ = try patcher.pure_patch(0x1001D99, &patch, &f);
     }
 
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
+    }
     // check output with a cave
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
@@ -325,17 +341,13 @@ test "elf fizzbuzz fizz always" {
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expect(no_patch_result.term == .Exited);
     try std.testing.expect(patch_result.term == .Exited);
-    try std.testing.expectEqual(no_patch_result.term.Exited, patch_result.term.Exited);
+    try std.testing.expectEqual(0, patch_result.term.Exited);
     try std.testing.expectEqualStrings(expected_output, patch_result.stdout);
-    try std.testing.expectEqualStrings(no_patch_result.stderr, patch_result.stderr);
+    try std.testing.expectEqual(0, patch_result.stderr.len);
 }
 
 test "coff fizzbuzz fizz always" {
-    if (builtin.os.tag != .windows) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/fizzbuzz.zig";
     const test_with_patch_path = "./coff_fizzbuzz_fizz_always.exe";
     const cwd: std.fs.Dir = std.fs.cwd();
@@ -389,14 +401,6 @@ test "coff fizzbuzz fizz always" {
         \\
     ;
 
-    // check regular output.
-    const no_patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
-    });
-    defer std.testing.allocator.free(no_patch_result.stdout);
-    defer std.testing.allocator.free(no_patch_result.stderr);
-
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
@@ -415,6 +419,9 @@ test "coff fizzbuzz fizz always" {
         _ = try patcher.pure_patch(0x1400010E6, &patch, &f);
     }
 
+    if (builtin.os.tag != .windows) {
+        return error.SkipZigTest;
+    }
     // check output with a cave
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
@@ -422,9 +429,8 @@ test "coff fizzbuzz fizz always" {
     });
     defer std.testing.allocator.free(patch_result.stdout);
     defer std.testing.allocator.free(patch_result.stderr);
-    try std.testing.expect(no_patch_result.term == .Exited);
     try std.testing.expect(patch_result.term == .Exited);
-    try std.testing.expectEqual(no_patch_result.term.Exited, patch_result.term.Exited);
+    try std.testing.expectEqual(0, patch_result.term.Exited);
     try std.testing.expectEqualStrings(expected_output, patch_result.stdout);
-    try std.testing.expectEqualStrings(no_patch_result.stderr, patch_result.stderr);
+    try std.testing.expectEqual(0, patch_result.stderr.len);
 }

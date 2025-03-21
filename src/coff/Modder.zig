@@ -219,18 +219,20 @@ fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
 
 pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
     const normalized_addr = if (addr < self.header.image_base) return Error.AddrNotMapped else addr - self.header.image_base;
-    const containnig_idx = self.addr_to_idx(normalized_addr);
-    if (!(normalized_addr < (self.sechdrs[containnig_idx].virtual_address + self.sechdrs[containnig_idx].virtual_address))) return Error.AddrNotMapped;
+    const containnig_idx = try self.addr_to_idx(normalized_addr);
+    if (!(normalized_addr < (self.sechdrs[containnig_idx].virtual_address + self.sechdrs[containnig_idx].virtual_size))) return Error.AddrNotMapped;
     const potenital_off = self.sechdrs[containnig_idx].pointer_to_raw_data + normalized_addr - self.sechdrs[containnig_idx].virtual_address;
     if (!(potenital_off < (self.sechdrs[containnig_idx].pointer_to_raw_data + self.sechdrs[containnig_idx].size_of_raw_data))) return Error.NoMatchingOffset;
     return potenital_off;
 }
 
-fn addr_to_idx(self: *const Modder, addr: u64) usize {
+fn addr_to_idx(self: *const Modder, addr: u64) !usize {
     // const temp = std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
     // std.debug.print("\nself.sechdrs[self.addr_sort[temp]].virtual_address = {X}\n", .{self.sechdrs[self.addr_sort[temp]].virtual_address});
     // std.debug.print("addr = {X}\n", .{addr});
-    return self.addr_sort[std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn) - 1];
+    const lower_bound = std.sort.lowerBound(usize, self.addr_sort[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
+    if (lower_bound == 0) return Error.AddrNotMapped;
+    return self.addr_sort[lower_bound - 1];
 }
 
 fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
@@ -253,26 +255,33 @@ pub fn cave_to_off(self: Modder, cave: SecEdge, size: u64) u64 {
 }
 
 test "create cave same output" {
-    if (builtin.os.tag != .windows) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
-    const test_with_cave_prefix = "./create_cave_same_output_coff.exe";
+    const test_with_cave_prefix = "./create_cave_same_output_coff";
+    const native_compile_path = "./coff_cave_hello_world";
     const cwd: std.fs.Dir = std.fs.cwd();
-    const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
+    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "Debug" }; // ReleaseSafe seems to be generated without any large caves.
     const targets = &.{ "x86_64-windows", "x86-windows" };
 
-    var maybe_no_cave_results: ?std.process.Child.RunResult = null;
-    defer {
-        if (maybe_no_cave_results) |no_cave_result| {
-            std.testing.allocator.free(no_cave_result.stdout);
-            std.testing.allocator.free(no_cave_result.stderr);
-        }
+    {
+        const build_native_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_native_result.stdout);
+        defer std.testing.allocator.free(build_native_result.stderr);
+        try std.testing.expect(build_native_result.term == .Exited);
     }
+    const no_cave_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{native_compile_path},
+    });
+    defer std.testing.allocator.free(no_cave_result.stdout);
+    defer std.testing.allocator.free(no_cave_result.stderr);
+    try std.testing.expect(no_cave_result.term == .Exited);
 
     inline for (optimzes) |optimize| {
         inline for (targets) |target| {
-            const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize;
+            const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize ++ ".exe";
             {
                 const build_src_result = try std.process.Child.run(.{
                     .allocator = std.testing.allocator,
@@ -283,15 +292,6 @@ test "create cave same output" {
                 try std.testing.expect(build_src_result.term == .Exited);
                 try std.testing.expect(build_src_result.stderr.len == 0);
             }
-
-            if (maybe_no_cave_results == null) {
-                // check regular output.
-                maybe_no_cave_results = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{test_with_cave_filename},
-                });
-            }
-            const no_cave_result = maybe_no_cave_results.?;
 
             {
                 var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
@@ -309,18 +309,23 @@ test "create cave same output" {
                 try coff_modder.create_cave(wanted_size, option, &stream);
             }
 
-            // check output with a cave
-            const cave_result = try std.process.Child.run(.{
-                .allocator = std.testing.allocator,
-                .argv = &[_][]const u8{test_with_cave_filename},
-            });
-            defer std.testing.allocator.free(cave_result.stdout);
-            defer std.testing.allocator.free(cave_result.stderr);
-            try std.testing.expect(cave_result.term == .Exited);
-            try std.testing.expect(no_cave_result.term == .Exited);
-            try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-            try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-            try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+            if (builtin.os.tag == .windows) {
+                // check output with a cave
+                const cave_result = try std.process.Child.run(.{
+                    .allocator = std.testing.allocator,
+                    .argv = &[_][]const u8{test_with_cave_filename},
+                });
+                defer std.testing.allocator.free(cave_result.stdout);
+                defer std.testing.allocator.free(cave_result.stderr);
+                try std.testing.expect(cave_result.term == .Exited);
+                try std.testing.expect(no_cave_result.term == .Exited);
+                try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
+                try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
+                try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+            }
         }
+    }
+    if (builtin.os.tag != .windows) {
+        return error.SkipZigTest;
     }
 }

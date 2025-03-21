@@ -232,12 +232,27 @@ pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(CoffModder, Disasm)
 }
 
 test "c patcher api elf" {
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_patch_path = "./patcher_api_elf";
+    const native_compile_path = "./c_elf_hello_world";
     const cwd: std.fs.Dir = std.fs.cwd();
+
+    {
+        const build_native_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_native_result.stdout);
+        defer std.testing.allocator.free(build_native_result.stderr);
+        try std.testing.expect(build_native_result.term == .Exited);
+    }
+    const no_patch_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{native_compile_path},
+    });
+    defer std.testing.allocator.free(no_patch_result.stdout);
+    defer std.testing.allocator.free(no_patch_result.stderr);
+    try std.testing.expect(no_patch_result.term == .Exited);
 
     {
         const build_src_result = try std.process.Child.run(.{
@@ -249,14 +264,6 @@ test "c patcher api elf" {
         try std.testing.expect(build_src_result.term == .Exited);
         try std.testing.expect(build_src_result.stderr.len == 0);
     }
-
-    // check regular output.
-    const no_patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_patch_path},
-    });
-    defer std.testing.allocator.free(no_patch_result.stdout);
-    defer std.testing.allocator.free(no_patch_result.stderr);
 
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
@@ -270,6 +277,9 @@ test "c patcher api elf" {
         try std.testing.expectEqual(.Ok, ElfPatcher_pure_patch(&patcher, 0x1001B43, patch_data, &stream, null));
     }
 
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
+    }
     // check output with a cave
     const patch_result = try std.process.Child.run(.{
         .allocator = std.testing.allocator,

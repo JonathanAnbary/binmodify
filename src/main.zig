@@ -53,6 +53,8 @@ pub fn main() !void {
     if (std.mem.eql(u8, buf[0..MZ.len], MZ)) {
         const data = try alloc.alloc(u8, try f.getEndPos());
         defer alloc.free(data);
+        try f.seekTo(0);
+        std.debug.assert(try f.readAll(data) == data.len);
         const coff = try std.coff.Coff.init(data, false);
         const parsed = CoffParsed.init(coff);
         var patcher = try patch.Patcher(CoffModder, capstone.Disasm).init(alloc, &f, &parsed);
