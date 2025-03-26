@@ -15,11 +15,11 @@ Usage
 
 Run `zig build` in order to build the command line application and the static library.
 
-You can use `binmodify` via the zig build system by running:
+You can also use `binmodify` via the zig build system by running:
 ```bash
 zig fetch --save <binmodify>
 ```
-And then adding the following to your `build.zig`:
+And then add the following to your `build.zig`:
 ```zig
 const binmodify = b.dependency("binmodify", .{
     .target = target,
@@ -35,7 +35,7 @@ Testing
 Testing the application requires an additional dependency on keystone, 
 and since it is not packaged via build.zig you will need cmake in order to build it.  
 
-I suggest setting CC and CXX to zig-cc and zig-c++ respectivly and then following the instructions at [README.md](keystone/README.md).
+I suggest setting CC and CXX to zig-cc and zig-c++ respectivly and then following the instructions at [keystone README](keystone/README.md).
 
 Test coverage is quite crap since Im lazy, in addition the PE tests have only been ran infrequently due to wine being too difficult.
 
@@ -45,5 +45,5 @@ Planned features
 These are the features I plan to add:
 
 - Macho support (currently only the Elf and PE formats are supported, might not be possible due to required signatures on macho).
-- New file ranges creation (currently file ranges can be extended but not created, This will require to move the phdr table in elf, which might not be easy).
+- New file ranges creation (currently file ranges can be extended but not created, This will require to resize the phdr table in elf, which might not be easy, have not looked into it for PE).
 - General api improvments (Im only really using this in [binmodify_plug](https://github.com/JonathanAnbary/binmodify_plug) which makes the project very tightly coupled and probably blinds me to some better api design).
