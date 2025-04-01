@@ -622,8 +622,8 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
             break :blk self.ranges.len;
         } else {
             const post_off_idx = self.top_offs[phdr_top_idx + 1];
-            const post_range_idx = self.off_sort[post_off_idx];
-            if ((addrs[top_range_idx] + memszs[top_range_idx] + needed_size) > addrs[post_range_idx]) return Error.NoSpacePastPhdrTable;
+            // const post_range_idx = self.off_sort[post_off_idx];
+            // if ((addrs[top_range_idx] + memszs[top_range_idx] + needed_size) > addrs[post_range_idx]) return Error.NoSpacePastPhdrTable;
             break :blk post_off_idx;
         }
     };
@@ -635,33 +635,39 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
         off_compareFn,
     ) - 1 + top_off_idx;
     const phdr_range_idx = self.off_sort[phdr_off_idx];
-    if ((offs[top_range_idx] + fileszs[top_range_idx]) != (offs[phdr_range_idx] + fileszs[phdr_range_idx])) {
-        return Error.NoSpacePastPhdrTable;
-    }
-
-    try self.shift_forward(needed_size, phdr_top_idx + 1, file);
-    try self.set_filerange_field(top_range_idx, fileszs[top_range_idx] + needed_size, .filesz, file);
-    try self.set_filerange_field(top_range_idx, memszs[top_range_idx] + needed_size, .memsz, file);
+    // if ((offs[top_range_idx] + fileszs[top_range_idx]) != (offs[phdr_range_idx] + fileszs[phdr_range_idx])) {
+    //     return Error.NoSpacePastPhdrTable;
+    // }
 
     if ((offs[phdr_range_idx] + fileszs[phdr_range_idx]) != (self.header.phoff + self.header.phentsize * self.header.phnum)) {
         return Error.PhdrTablePhdrNotFound;
     }
-    std.debug.assert((offs[phdr_range_idx] + fileszs[phdr_range_idx]) == (self.header.phoff + self.header.phentsize * self.header.phnum));
+    try self.shift_forward(needed_size, phdr_top_idx + 1, file);
     try shift.shift_forward(
         file,
         self.header.phoff + self.header.phentsize * self.header.phnum,
         offs[top_range_idx] + fileszs[top_range_idx],
         needed_size,
     );
+    fileszs[top_range_idx] += needed_size;
+    try self.set_filerange_field(top_range_idx, fileszs[top_range_idx], .filesz, file);
+    memszs[top_range_idx] += needed_size;
+    try self.set_filerange_field(top_range_idx, memszs[top_range_idx], .memsz, file);
+    addrs[top_range_idx] -= needed_size;
+    try self.set_filerange_field(top_range_idx, addrs[top_range_idx], .addr, file);
+
     for (phdr_off_idx + 1..final_off_idx) |off_idx| {
         const index = self.off_sort[off_idx];
         offs[index] += needed_size;
         try self.set_filerange_field(index, offs[index], .off, file);
     }
+
     fileszs[phdr_range_idx] += self.header.phentsize;
     try self.set_filerange_field(phdr_range_idx, fileszs[phdr_range_idx], .filesz, file);
     memszs[phdr_range_idx] += self.header.phentsize;
     try self.set_filerange_field(phdr_range_idx, memszs[phdr_range_idx], .memsz, file);
+    addrs[phdr_range_idx] -= needed_size; // self.header.phentsize;
+    try self.set_filerange_field(phdr_range_idx, addrs[phdr_range_idx], .addr, file);
 
     const last_off_range_idx = self.off_sort[self.top_offs[self.top_offs.len - 1]];
     const max_off = offs[last_off_range_idx] + fileszs[last_off_range_idx];
@@ -1045,54 +1051,54 @@ test "repeated cave expansion equal to single cave" {
     try std.testing.expectEqual(try f_non_repeated.getEndPos(), try f_non_repeated.getPos());
 }
 
-// test "create segment same output" {
-//     if (builtin.os.tag != .linux) {
-//         error.SkipZigTest;
-//     }
-//     const test_src_path = "./tests/hello_world.zig";
-//     const test_with_cave = "./create_segment_same_output_elf";
-//     const cwd: std.fs.Dir = std.fs.cwd();
-//
-//     {
-//         const build_src_result = try std.process.Child.run(.{
-//             .allocator = std.testing.allocator,
-//             .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=elf", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
-//         });
-//         defer std.testing.allocator.free(build_src_result.stdout);
-//         defer std.testing.allocator.free(build_src_result.stderr);
-//         try std.testing.expect(build_src_result.term == .Exited);
-//         try std.testing.expect(build_src_result.stderr.len == 0);
-//     }
-//
-//     // check regular output.
-//     const no_cave_result = try std.process.Child.run(.{
-//         .allocator = std.testing.allocator,
-//         .argv = &[_][]const u8{test_with_cave},
-//     });
-//     defer std.testing.allocator.free(no_cave_result.stdout);
-//     defer std.testing.allocator.free(no_cave_result.stderr);
-//
-//     {
-//         var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
-//         defer f.close();
-//         var stream = std.io.StreamSource{ .file = f };
-//         const wanted_size = 0xfff;
-//         const parsed = try Parsed.init(&stream);
-//         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
-//         defer elf_modder.deinit(std.testing.allocator);
-//         try elf_modder.create_segment(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
-//     }
-//
-//     // check output with a cave
-//     const cave_result = try std.process.Child.run(.{
-//         .allocator = std.testing.allocator,
-//         .argv = &[_][]const u8{test_with_cave},
-//     });
-//     defer std.testing.allocator.free(cave_result.stdout);
-//     defer std.testing.allocator.free(cave_result.stderr);
-//     try std.testing.expect(cave_result.term == .Exited);
-//     try std.testing.expect(no_cave_result.term == .Exited);
-//     try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-//     try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-//     try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
-// }
+test "create segment same output" {
+    if (builtin.os.tag != .linux) {
+        error.SkipZigTest;
+    }
+    const test_src_path = "./tests/hello_world.zig";
+    const test_with_cave = "./create_segment_same_output_elf";
+    const cwd: std.fs.Dir = std.fs.cwd();
+
+    {
+        const build_src_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-O", "ReleaseSmall", "-ofmt=elf", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_src_result.stdout);
+        defer std.testing.allocator.free(build_src_result.stderr);
+        try std.testing.expect(build_src_result.term == .Exited);
+        try std.testing.expect(build_src_result.stderr.len == 0);
+    }
+
+    // check regular output.
+    const no_cave_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{test_with_cave},
+    });
+    defer std.testing.allocator.free(no_cave_result.stdout);
+    defer std.testing.allocator.free(no_cave_result.stderr);
+
+    {
+        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
+        defer f.close();
+        var stream = std.io.StreamSource{ .file = f };
+        const wanted_size = 0xfff;
+        const parsed = try Parsed.init(&stream);
+        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+        defer elf_modder.deinit(std.testing.allocator);
+        try elf_modder.create_segment(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
+    }
+
+    // check output with a cave
+    const cave_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{test_with_cave},
+    });
+    defer std.testing.allocator.free(cave_result.stdout);
+    defer std.testing.allocator.free(cave_result.stderr);
+    try std.testing.expect(cave_result.term == .Exited);
+    try std.testing.expect(no_cave_result.term == .Exited);
+    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
+    try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
+    try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+}

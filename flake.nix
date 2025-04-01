@@ -28,6 +28,7 @@
       packages = [
         zls
         zig
+        pkgs-stable.qemu
         pkgs-stable.wine64
         pkgs-stable.wineWowPackages.stable
         (pkgs.python3.withPackages (python-pkgs: with python-pkgs; [
