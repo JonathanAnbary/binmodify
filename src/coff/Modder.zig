@@ -127,12 +127,12 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
             .sec_idx = sec_idx,
             .is_end = true,
         };
-        // NOTE: not doing start caves since I am not sure how to resolve the alignment requirements of section start address.
-        const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
-        if (self.sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
-            .sec_idx = sec_idx,
-            .is_end = false,
-        };
+        // TODO: Add support for start caves by giving the coff Modder the same treatment as the elf modder (creating file ranges from the headers as well).
+        // const prev_sec_mem_bound = (if (self.sec_to_addr[sec_idx] == 0) 0 else (self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_address + self.sechdrs[self.sec_to_addr[sec_idx] - 1].virtual_size));
+        // if (self.sechdrs[sec_idx].virtual_address > (wanted_size + prev_sec_mem_bound)) return SecEdge{
+        //     .sec_idx = sec_idx,
+        //     .is_end = false,
+        // };
     }
     return null;
 }
@@ -279,11 +279,9 @@ test "create cave same output" {
     defer std.testing.allocator.free(no_cave_result.stderr);
     try std.testing.expect(no_cave_result.term == .Exited);
 
-    std.debug.print("\n", .{});
     inline for (optimzes) |optimize| {
         inline for (targets) |target| {
             const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize ++ ".exe";
-            std.debug.print("test_with_cave_filename = {s}\n", .{test_with_cave_filename});
             {
                 const build_src_result = try std.process.Child.run(.{
                     .allocator = std.testing.allocator,
@@ -305,17 +303,8 @@ test "create cave same output" {
                 try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
                 const coff = try std.coff.Coff.init(data, false);
                 const parsed = Parsed.init(coff);
-                const coff_header = coff.getCoffHeader();
-                const offset = coff.coff_header_offset + @sizeOf(std.coff.CoffHeader) + coff_header.size_of_optional_header;
-                std.debug.print("offset = {X}, {X}\n", .{ offset + @offsetOf(std.coff.SectionHeader, "virtual_address"), offset + @offsetOf(std.coff.SectionHeader, "virtual_size") });
-                for (parsed.coff.getSectionHeaders()) |sechdr| {
-                    std.debug.print("{X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_address + sechdr.virtual_size });
-                }
                 var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
                 defer coff_modder.deinit(std.testing.allocator);
-                for (coff_modder.addr_sort[0..coff_modder.sechdrs.len]) |idx| {
-                    std.debug.print("{X} - {X}\n", .{ coff_modder.sechdrs[idx].virtual_address, coff_modder.sechdrs[idx].virtual_address + coff_modder.sechdrs[idx].virtual_size });
-                }
                 const option = (try coff_modder.get_cave_option(wanted_size, .{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
                 try coff_modder.create_cave(wanted_size, option, &stream);
             }
