@@ -683,9 +683,6 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
         try self.set_filerange_field(top_range_idx, addrs[top_range_idx], .addr, file);
         addrs[phdr_range_idx] -= needed_size; // self.header.phentsize;
         try self.set_filerange_field(phdr_range_idx, addrs[phdr_range_idx], .addr, file);
-        const prev_load_range_idx = self.addr_to_range[self.load_to_addr[phdr_load_idx + 1]];
-        memszs[prev_load_range_idx] -= needed_size;
-        try self.set_filerange_field(prev_load_range_idx, memszs[prev_load_range_idx], .memsz, file);
     }
 
     const last_off_range_idx = self.off_to_range[self.top_to_off[self.top_to_off.len - 1]];
