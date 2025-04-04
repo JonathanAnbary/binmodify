@@ -55,6 +55,7 @@ pub const Error = error{
     FieldNotAdjustable,
     PhdrTablePhdrNotFound,
     NoSpaceToExtendPhdrTable,
+    TooManyFileRanges,
 } || ElfError;
 
 pub const SegEdge: type = struct {
@@ -113,46 +114,13 @@ const PartialHeader = struct {
     shnum: u16,
 };
 
-const RangeIndex = enum(u16) {
-    _,
-    fn toOff(index: RangeIndex, range_to_off: []OffIndex) *OffIndex {
-        return &range_to_off[@intFromEnum(index)];
-    }
-    fn toAddr(index: RangeIndex, range_to_addr: []AddrIndex) *AddrIndex {
-        return &range_to_addr[@intFromEnum(index)];
-    }
-};
-const OffIndex = enum(u16) {
-    _,
+const RangeIndex = u16;
+const OffIndex = u16;
+const AddrIndex = u16;
 
-    fn toRange(index: OffIndex, modder: *const Modder) *RangeIndex {
-        return &modder.off_to_range[@intFromEnum(index)];
-    }
-};
-const AddrIndex = enum(u16) {
-    _,
+const LoadIndex = u16;
 
-    fn toRange(index: AddrIndex, modder: *const Modder) *RangeIndex {
-        return &modder.addr_to_range[@intFromEnum(index)];
-    }
-    fn toLoad(index: AddrIndex, modder: *const Modder) *LoadIndex {
-        return &modder.addr_to_load[@intFromEnum(index)];
-    }
-};
-const LoadIndex = enum(u16) {
-    _,
-
-    fn toAddr(index: LoadIndex, modder: *const Modder) *AddrIndex {
-        return &modder.load_to_addr[@intFromEnum(index)];
-    }
-};
-const TopIndex = enum(u16) {
-    _,
-
-    fn toOff(index: TopIndex, modder: *const Modder) *OffIndex {
-        return &modder.top_to_off[@intFromEnum(index)];
-    }
-};
+const TopIndex = u16;
 
 header: PartialHeader,
 ranges: std.MultiArrayList(FileRange),
@@ -171,6 +139,7 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     var ranges = std.MultiArrayList(FileRange){};
     errdefer ranges.deinit(gpa);
     // + 1 for the sechdr table which appears to not be contained in any section/segment.
+    if (parsed.header.shnum + 1 + parsed.header.phnum > std.math.maxInt(RangeIndex)) return Error.TooManyFileRanges;
     try ranges.setCapacity(gpa, parsed.header.shnum + 1 + parsed.header.phnum);
     var shdrs_iter = parsed.header.section_header_iterator(file);
     while (try shdrs_iter.next()) |shdr| {
@@ -193,11 +162,11 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
         .alignment = 0,
         .flags = .{},
     });
-    var load_count: u32 = 0;
+    var load_count: u16 = 0;
     const load_map = try gpa.alloc(bool, parsed.header.phnum);
     defer gpa.free(load_map);
     var phdrs_iter = parsed.header.program_header_iterator(file);
-    var phdr_idx: u32 = 0;
+    var phdr_idx: u16 = 0;
     while (try phdrs_iter.next()) |phdr| : (phdr_idx += 1) {
         const flags: PFlags = @bitCast(phdr.p_flags);
         // NOTE: the docs seem to indicate that PT_TLS should not be loaded based on itself (ie it should overlap with a PT_LOAD)
@@ -222,8 +191,8 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     var addr_to_range = try gpa.alloc(RangeIndex, ranges.len);
     errdefer gpa.free(addr_to_range[0..ranges.len]);
     for (0..ranges.len) |i| {
-        off_to_range[i] = @enumFromInt(i);
-        addr_to_range[i] = @enumFromInt(i);
+        off_to_range[i] = @intCast(i);
+        addr_to_range[i] = @intCast(i);
     }
     std.sort.pdq(RangeIndex, off_to_range, &ranges, off_lessThanFn);
     std.sort.pdq(RangeIndex, addr_to_range, &ranges, addr_lessThanFn);
@@ -232,16 +201,16 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     const range_to_addr = try gpa.alloc(AddrIndex, ranges.len);
     errdefer gpa.free(range_to_addr[0..ranges.len]);
     for (off_to_range, addr_to_range, 0..) |off_idx, addr_idx, idx| {
-        off_idx.toOff(range_to_off).* = @enumFromInt(idx);
-        addr_idx.toAddr(range_to_addr).* = @enumFromInt(idx);
+        range_to_off[off_idx] = @intCast(idx);
+        range_to_addr[addr_idx] = @intCast(idx);
     }
     const offs = ranges.items(.off);
     const fileszs = ranges.items(.filesz);
-    var off_containing_index = @intFromEnum(off_to_range[0]);
+    var off_containing_index = off_to_range[0];
     var off_containing_count: usize = 1;
     if (offs[off_containing_index] != 0) return Error.InvalidElfRanges;
     for (off_to_range[1..]) |index| {
-        const idx = @intFromEnum(index);
+        const idx = index;
         const off = offs[idx];
         if (off >= (offs[off_containing_index] + fileszs[off_containing_index])) {
             off_containing_index = idx;
@@ -253,31 +222,30 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     const top_to_off = try gpa.alloc(OffIndex, off_containing_count);
     errdefer gpa.free(top_to_off);
     off_containing_count = 0;
-    off_containing_index = @intFromEnum(off_to_range[0]);
-    top_to_off[off_containing_count] = @enumFromInt(0);
+    off_containing_index = off_to_range[0];
+    top_to_off[off_containing_count] = 0;
     off_containing_count += 1;
     for (off_to_range[1..], 1..) |index, i| {
-        const idx = @intFromEnum(index);
+        const idx = index;
         const off = offs[idx];
         if (off >= (offs[off_containing_index] + fileszs[off_containing_index])) {
             off_containing_index = idx;
-            top_to_off[off_containing_count] = @enumFromInt(i);
+            top_to_off[off_containing_count] = @intCast(i);
             off_containing_count += 1;
         }
     }
     const addrs = ranges.items(.addr);
     const memszs = ranges.items(.memsz);
     const load_to_addr = try gpa.alloc(AddrIndex, load_count);
-    var load_index: u16 = 0;
+    var load_index: LoadIndex = 0;
     errdefer gpa.free(load_to_addr);
     for (addr_to_range, 0..) |index, i| {
-        const idx = @intFromEnum(index);
-        if (idx < (parsed.header.shnum + 1)) continue;
-        if (load_map[idx - (parsed.header.shnum + 1)]) {
-            if ((load_index != 0) and (addrs[idx] < (addrs[addr_to_range[load_to_addr[load_index - 1]]] + memszs[addr_to_range[load_to_addr[load_index - 1]]]))) {
+        if (index < (parsed.header.shnum + 1)) continue;
+        if (load_map[index - (parsed.header.shnum + 1)]) {
+            if ((load_index != 0) and (addrs[index] < (addrs[addr_to_range[load_to_addr[load_index - 1]]] + memszs[addr_to_range[load_to_addr[load_index - 1]]]))) {
                 return Error.OverlappingMemoryRanges;
             }
-            load_to_addr[load_index] = i;
+            load_to_addr[load_index] = @intCast(i);
             load_index += 1;
         }
     }
@@ -287,12 +255,12 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     var prev_load = load_to_addr[0];
     for (load_to_addr[1..], 1..) |load_addr, load_idx| {
         for (prev_load..load_addr) |addr_idx| {
-            addr_to_load[addr_idx] = load_idx - 1;
+            addr_to_load[addr_idx] = @intCast(load_idx - 1);
         }
         prev_load = load_addr;
     }
     for (prev_load..ranges.len) |addr_idx| {
-        addr_to_load[addr_idx] = load_to_addr.len - 1;
+        addr_to_load[addr_idx] = @intCast(load_to_addr.len - 1);
     }
 
     const temp = Modder{
@@ -359,7 +327,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
         const top_addr_idx = self.addr_to_load[addr_idx];
         // NOTE: this assumes you dont have an upper bound on possible memory address.
         if ((top_addr_idx == (self.load_to_addr.len - 1)) or ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[self.addr_to_range[self.load_to_addr[top_addr_idx + 1]]])) return SegEdge{
-            .top_idx = i,
+            .top_idx = @intCast(i),
             .is_end = true,
         };
         const prev_seg_mem_bound = if (top_addr_idx == 0) 0 else blk: {
@@ -367,7 +335,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
             break :blk (addrs[prev_top_seg_idx] + memszs[prev_top_seg_idx]);
         };
         if (addrs[range_idx] > (wanted_size + prev_seg_mem_bound)) return SegEdge{
-            .top_idx = i,
+            .top_idx = @intCast(i),
             .is_end = false,
         };
     }
@@ -464,7 +432,7 @@ fn calc_new_off(self: *const Modder, top_idx: TopIndex, size: u64) !u64 {
     return new_offset;
 }
 
-fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, file: anytype) !void {
+fn shift_forward(self: *Modder, size: u64, start_top_idx: TopIndex, file: anytype) !void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const aligns = self.ranges.items(.alignment);
@@ -717,7 +685,7 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
         try self.set_filerange_field(phdr_range_idx, addrs[phdr_range_idx], .addr, file);
         const prev_load_range_idx = self.addr_to_range[self.load_to_addr[phdr_load_idx + 1]];
         memszs[prev_load_range_idx] -= needed_size;
-        try self.set_filerange_field(prev_load_range_idx, memszs[prev_load_range_idx], .memszs, file);
+        try self.set_filerange_field(prev_load_range_idx, memszs[prev_load_range_idx], .memsz, file);
     }
 
     const last_off_range_idx = self.off_to_range[self.top_to_off[self.top_to_off.len - 1]];
@@ -745,20 +713,20 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     try file.writer().writeByteNTimes(0, size);
     // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
     self.off_to_range = (try gpa.realloc(self.off_to_range[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    self.off_to_range[self.ranges.len] = self.ranges.len;
+    self.off_to_range[self.ranges.len] = @intCast(self.ranges.len);
     self.addr_to_range = (try gpa.realloc(self.addr_to_range[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    self.addr_to_range[self.ranges.len] = self.ranges.len;
+    self.addr_to_range[self.ranges.len] = @intCast(self.ranges.len);
     self.range_to_off = (try gpa.realloc(self.range_to_off[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    self.range_to_off[self.ranges.len] = self.ranges.len;
+    self.range_to_off[self.ranges.len] = @intCast(self.ranges.len);
     self.range_to_addr = (try gpa.realloc(self.range_to_addr[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    self.range_to_addr[self.ranges.len] = self.ranges.len;
+    self.range_to_addr[self.ranges.len] = @intCast(self.ranges.len);
     self.addr_to_load = (try gpa.realloc(self.addr_to_load[0..self.ranges.len], self.ranges.len + 1)).ptr;
-    self.addr_to_load[self.ranges.len] = self.load_to_addr.len;
+    self.addr_to_load[self.ranges.len] = @intCast(self.load_to_addr.len);
     self.adjustments = (try gpa.realloc(self.adjustments[0..self.top_to_off.len], self.top_to_off.len + 1)).ptr;
     self.top_to_off = try gpa.realloc(self.top_to_off, self.top_to_off.len + 1);
-    self.top_to_off[self.top_to_off.len - 1] = self.ranges.len;
+    self.top_to_off[self.top_to_off.len - 1] = @intCast(self.ranges.len);
     self.load_to_addr = try gpa.realloc(self.load_to_addr, self.load_to_addr.len + 1);
-    self.load_to_addr[self.load_to_addr.len - 1] = self.ranges.len;
+    self.load_to_addr[self.load_to_addr.len - 1] = @intCast(self.ranges.len);
     try self.ranges.append(gpa, .{
         .addr = max_addr + alignment_addend,
         .off = max_off,
@@ -824,7 +792,7 @@ pub fn cave_to_off(self: *const Modder, cave: SegEdge, size: u64) u64 {
 }
 
 fn off_to_top_idx(self: *const Modder, off: u64) TopIndex {
-    return std.sort.lowerBound(OffIndex, self.top_to_off, CompareContext{ .self = self, .lhs = off + 1 }, top_off_compareFn) - 1;
+    return @intCast(std.sort.lowerBound(OffIndex, self.top_to_off, CompareContext{ .self = self, .lhs = off + 1 }, top_off_compareFn) - 1);
 }
 
 pub fn print_modelf(elf_modder: *const Modder) void {

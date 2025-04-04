@@ -95,7 +95,8 @@ pub const Result: type = enum(u8) {
     UnmappedRange,
     FieldNotAdjustable,
     PhdrTablePhdrNotFound,
-    NoSpacePastPhdrTable,
+    NoSpaceToExtendPhdrTable,
+    TooManyFileRanges,
 };
 
 const AllError = ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error;
@@ -178,7 +179,8 @@ pub fn err_to_res(e: AllError) Result {
         AllError.UnmappedRange => .UnmappedRange,
         AllError.FieldNotAdjustable => .FieldNotAdjustable,
         AllError.PhdrTablePhdrNotFound => .PhdrTablePhdrNotFound,
-        AllError.NoSpacePastPhdrTable => .NoSpacePastPhdrTable,
+        AllError.NoSpaceToExtendPhdrTable => .NoSpaceToExtendPhdrTable,
+        AllError.TooManyFileRanges => .TooManyFileRanges,
     };
 }
 
