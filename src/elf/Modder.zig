@@ -77,19 +77,21 @@ fn off_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: RangeIndex, rhs: 
     const offs = ranges.items(.off);
     const fileszs = ranges.items(.filesz);
     const aligns = ranges.items(.alignment);
-    return (offs[lhs] < offs[rhs]) or
-        ((offs[lhs] == offs[rhs]) and
-            ((fileszs[lhs] > fileszs[rhs]) or
-                ((fileszs[lhs] == fileszs[rhs]) and
-                    ((aligns[lhs] > aligns[rhs]) or
-                        ((aligns[lhs] == aligns[rhs]) and
-                            (lhs > rhs))))));
+    const lhs_int = @intFromEnum(lhs);
+    const rhs_int = @intFromEnum(rhs);
+    return (offs[lhs_int] < offs[rhs_int]) or
+        ((offs[lhs_int] == offs[rhs_int]) and
+            ((fileszs[lhs_int] > fileszs[rhs_int]) or
+                ((fileszs[lhs_int] == fileszs[rhs_int]) and
+                    ((aligns[lhs_int] > aligns[rhs_int]) or
+                        ((aligns[lhs_int] == aligns[rhs_int]) and
+                            (lhs_int > rhs_int))))));
 }
 
 // TODO: consider if this should have a similar logic, where segments which "contain" other segments come first.
 fn addr_lessThanFn(ranges: *std.MultiArrayList(FileRange), lhs: RangeIndex, rhs: RangeIndex) bool {
     const addrs = ranges.items(.addr);
-    return (addrs[lhs] < addrs[rhs]);
+    return (addrs[@intFromEnum(lhs)] < addrs[@intFromEnum(rhs)]);
 }
 
 const FileRange: type = struct {
@@ -125,32 +127,32 @@ const RangeIndex = enum(u16) {
 const OffIndex = enum(u16) {
     _,
 
-    fn toRange(index: OffIndex, modder: *const Modder) *RangeIndex {
-        return &modder.off_to_range[@intFromEnum(index)];
+    fn toRange(index: OffIndex, off_to_range: []RangeIndex) *RangeIndex {
+        return &off_to_range[@intFromEnum(index)];
     }
 };
 const AddrIndex = enum(u16) {
     _,
 
-    fn toRange(index: AddrIndex, modder: *const Modder) *RangeIndex {
-        return &modder.addr_to_range[@intFromEnum(index)];
+    fn toRange(index: AddrIndex, addr_to_range: []RangeIndex) *RangeIndex {
+        return &addr_to_range[@intFromEnum(index)];
     }
-    fn toLoad(index: AddrIndex, modder: *const Modder) *LoadIndex {
-        return &modder.addr_to_load[@intFromEnum(index)];
+    fn toLoad(index: AddrIndex, addr_to_load: []LoadIndex) *LoadIndex {
+        return &addr_to_load[@intFromEnum(index)];
     }
 };
 const LoadIndex = enum(u16) {
     _,
 
-    fn toAddr(index: LoadIndex, modder: *const Modder) *AddrIndex {
-        return &modder.load_to_addr[@intFromEnum(index)];
+    fn toAddr(index: LoadIndex, load_to_addr: []AddrIndex) *AddrIndex {
+        return &load_to_addr[@intFromEnum(index)];
     }
 };
 const TopIndex = enum(u16) {
     _,
 
-    fn toOff(index: TopIndex, modder: *const Modder) *OffIndex {
-        return &modder.top_to_off[@intFromEnum(index)];
+    fn toOff(index: TopIndex, top_to_off: []OffIndex) *OffIndex {
+        return &top_to_off[@intFromEnum(index)];
     }
 };
 
@@ -274,10 +276,10 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
         const idx = @intFromEnum(index);
         if (idx < (parsed.header.shnum + 1)) continue;
         if (load_map[idx - (parsed.header.shnum + 1)]) {
-            if ((load_index != 0) and (addrs[idx] < (addrs[addr_to_range[load_to_addr[load_index - 1]]] + memszs[addr_to_range[load_to_addr[load_index - 1]]]))) {
+            if ((load_index != 0) and (addrs[idx] < (addrs[@intFromEnum(load_to_addr[load_index - 1].toRange(addr_to_range).*)] + memszs[@intFromEnum(load_to_addr[load_index - 1].toRange(addr_to_range).*)]))) {
                 return Error.OverlappingMemoryRanges;
             }
-            load_to_addr[load_index] = i;
+            load_to_addr[load_index] = @enumFromInt(i);
             load_index += 1;
         }
     }
@@ -286,13 +288,13 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     errdefer gpa.free(addr_to_load[0..ranges.len]);
     var prev_load = load_to_addr[0];
     for (load_to_addr[1..], 1..) |load_addr, load_idx| {
-        for (prev_load..load_addr) |addr_idx| {
-            addr_to_load[addr_idx] = load_idx - 1;
+        for (@intFromEnum(prev_load)..@intFromEnum(load_addr)) |addr_idx| {
+            addr_to_load[addr_idx] = @enumFromInt(load_idx - 1);
         }
         prev_load = load_addr;
     }
-    for (prev_load..ranges.len) |addr_idx| {
-        addr_to_load[addr_idx] = load_to_addr.len - 1;
+    for (@intFromEnum(prev_load)..ranges.len) |addr_idx| {
+        addr_to_load[addr_idx] = @enumFromInt(load_to_addr.len - 1);
     }
 
     const temp = Modder{
@@ -353,21 +355,21 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
     while (i > 0) {
         i -= 1;
         const off_idx = self.top_to_off[i];
-        const range_idx = self.off_to_range[off_idx];
+        const range_idx = @intFromEnum(off_idx.toRange(self.off_to_range[0..self.ranges.len]).*);
         if (flagss[range_idx] != flags) continue;
         const addr_idx = self.range_to_addr[range_idx];
-        const top_addr_idx = self.addr_to_load[addr_idx];
+        const top_addr_idx = @intFromEnum(addr_idx.toLoad(self.addr_to_load[0..self.ranges.len]).*);
         // NOTE: this assumes you dont have an upper bound on possible memory address.
-        if ((top_addr_idx == (self.load_to_addr.len - 1)) or ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[self.addr_to_range[self.load_to_addr[top_addr_idx + 1]]])) return SegEdge{
-            .top_idx = i,
+        if ((top_addr_idx == (self.load_to_addr.len - 1)) or ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[@intFromEnum(self.load_to_addr[top_addr_idx + 1].toRange(self.addr_to_range[0..self.ranges.len]).*)])) return SegEdge{
+            .top_idx = @enumFromInt(i),
             .is_end = true,
         };
         const prev_seg_mem_bound = if (top_addr_idx == 0) 0 else blk: {
-            const prev_top_seg_idx = self.addr_to_range[self.load_to_addr[top_addr_idx - 1]];
+            const prev_top_seg_idx = @intFromEnum(self.load_to_addr[top_addr_idx - 1].toRange(self.addr_to_range[0..self.ranges.len]).*);
             break :blk (addrs[prev_top_seg_idx] + memszs[prev_top_seg_idx]);
         };
         if (addrs[range_idx] > (wanted_size + prev_seg_mem_bound)) return SegEdge{
-            .top_idx = i,
+            .top_idx = @enumFromInt(i),
             .is_end = false,
         };
     }
@@ -375,8 +377,8 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
 }
 
 fn set_shdr_field(self: *Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, file: anytype) !void {
-    if (index >= self.header.shnum) return Error.OutOfBoundField;
-    try file.seekTo(self.header.shoff + self.header.shentsize * index);
+    if (@intFromEnum(index) >= self.header.shnum) return Error.OutOfBoundField;
+    try file.seekTo(self.header.shoff + self.header.shentsize * @intFromEnum(index));
     if (self.header.is_64) {
         const T = std.meta.fieldInfo(elf.Elf64_Shdr, @field(Shdr64Fields, field_name)).type;
         var temp: T = @intCast(val);
@@ -419,8 +421,8 @@ fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, file
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
 fn set_phdr_field(self: *Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, file: anytype) !void {
-    if (index >= self.header.phnum) return Error.OutOfBoundField;
-    try file.seekTo(self.header.phoff + self.header.phentsize * index);
+    if (@intFromEnum(index) >= self.header.phnum) return Error.OutOfBoundField;
+    try file.seekTo(self.header.phoff + self.header.phentsize * @intFromEnum(index));
     if (self.header.is_64) {
         const T = std.meta.fieldInfo(elf.Elf64_Phdr, @field(Phdr64Fields, field_name)).type;
         var temp: T = @intCast(val);
@@ -448,10 +450,10 @@ fn calc_new_off(self: *const Modder, top_idx: TopIndex, size: u64) !u64 {
     const aligns = self.ranges.items(.alignment);
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
-    const index = self.off_to_range[self.top_to_off[top_idx]];
+    const index = @intFromEnum(top_idx.toOff(self.top_to_off).toRange(self.off_to_range[0..self.ranges.len]).*);
 
     const align_offset = (offs[index] + (aligns[index] - (size % aligns[index]))) % aligns[index]; // The target value for 'new_off % top_idx.align'
-    const prev_idx = self.off_to_range[self.top_to_off[top_idx - 1]];
+    const prev_idx = @intFromEnum(self.top_to_off[@intFromEnum(top_idx) - 1].toRange(self.off_to_range[0..self.ranges.len]).*);
     const prev_off_end = offs[prev_idx] + fileszs[prev_idx];
     if (prev_off_end > offs[index]) return Error.IntersectingFileRanges;
     const new_offset = if (offs[index] > (size + prev_off_end))
@@ -464,18 +466,18 @@ fn calc_new_off(self: *const Modder, top_idx: TopIndex, size: u64) !u64 {
     return new_offset;
 }
 
-fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, file: anytype) !void {
+fn shift_forward(self: *Modder, size: u64, start_top_idx: TopIndex, file: anytype) !void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const aligns = self.ranges.items(.alignment);
 
     var needed_size = size;
-    var top_idx = start_top_idx;
+    var top_idx = @intFromEnum(start_top_idx);
     while (top_idx < self.top_to_off.len) : (top_idx += 1) {
         const off_range_index = self.top_to_off[top_idx];
-        const range_index = self.off_to_range[off_range_index];
+        const range_index = @intFromEnum(off_range_index.toRange(self.off_to_range[0..self.ranges.len]).*);
         const prev_off_range_index = self.top_to_off[top_idx - 1];
-        const prev_range_index = self.off_to_range[prev_off_range_index];
+        const prev_range_index = @intFromEnum(prev_off_range_index.toRange(self.off_to_range[0..self.ranges.len]).*);
         const existing_gap = offs[range_index] - (offs[prev_range_index] + fileszs[prev_range_index]);
         if (needed_size < existing_gap) break;
         needed_size -= existing_gap;
@@ -483,20 +485,20 @@ fn shift_forward(self: *Modder, size: u64, start_top_idx: u64, file: anytype) !v
         if ((aligns[range_index] != 0) and ((needed_size % aligns[range_index]) != 0)) {
             needed_size += aligns[range_index] - (needed_size % aligns[range_index]);
         }
-        self.adjustments[top_idx - start_top_idx] = needed_size;
+        self.adjustments[top_idx - @intFromEnum(start_top_idx)] = needed_size;
     }
-    var i = top_idx - start_top_idx;
+    var i = top_idx - @intFromEnum(start_top_idx);
     while (i > 0) {
         i -= 1;
-        const top_index = i + start_top_idx;
-        const top_off_idx = self.top_to_off[top_index];
-        const top_range_idx = self.off_to_range[top_off_idx];
+        const top_index: TopIndex = @enumFromInt(i + @intFromEnum(start_top_idx));
+        const top_off_idx = top_index.toOff(self.top_to_off).*;
+        const top_range_idx = @intFromEnum(top_off_idx.toRange(self.off_to_range[0..self.ranges.len]).*);
         try shift.shift_forward(file, offs[top_range_idx], offs[top_range_idx] + fileszs[top_range_idx], self.adjustments[i]);
-        const final_off_idx = if ((top_index + 1) == self.top_to_off.len) self.ranges.len else self.top_to_off[top_index + 1];
-        for (top_off_idx..final_off_idx) |off_idx| {
+        const final_off_idx = if ((@intFromEnum(top_index) + 1) == self.top_to_off.len) self.ranges.len else @intFromEnum(self.top_to_off[@intFromEnum(top_index) + 1]);
+        for (@intFromEnum(top_off_idx)..final_off_idx) |off_idx| {
             const index = self.off_to_range[off_idx];
-            offs[index] += self.adjustments[i];
-            try self.set_filerange_field(index, offs[index], .off, file);
+            offs[@intFromEnum(index)] += self.adjustments[i];
+            try self.set_filerange_field(index, offs[@intFromEnum(index)], .off, file);
         }
     }
 }
@@ -520,7 +522,7 @@ fn set_filerange_field(self: *Modder, index: RangeIndex, val: u64, comptime fiel
             try self.set_shdr_field(index, val, fieldname, file);
         },
         .ProgramHeader => {
-            const temp = index - (self.header.shnum + 1);
+            const temp: RangeIndex = @enumFromInt(@intFromEnum(index) - (self.header.shnum + 1));
             switch (field) {
                 .off => {
                     try self.set_phdr_field(temp, val, "p_offset", file);
@@ -545,33 +547,33 @@ fn set_filerange_field(self: *Modder, index: RangeIndex, val: u64, comptime fiel
 /// assumes that edge was returned from self.get_cave_option(size), and that the file has not been modified since it was called.
 pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) !void {
     // NOTE: moving around the pheader table sounds like a bad idea.
-    if (edge.top_idx == 0) return Error.CantExpandPhdr;
+    if (@intFromEnum(edge.top_idx) == 0) return Error.CantExpandPhdr;
     const offs = self.ranges.items(.off);
     const addrs = self.ranges.items(.addr);
     const fileszs = self.ranges.items(.filesz);
     const memszs = self.ranges.items(.memsz);
-    const idx = self.off_to_range[self.top_to_off[edge.top_idx]];
+    const idx = edge.top_idx.toOff(self.top_to_off).toRange(self.off_to_range[0..self.ranges.len]).*;
     // const shoff_top_idx = self.off_to_top_idx(self.header.shoff);
 
-    const old_offset: u64 = offs[idx];
+    const old_offset: u64 = offs[@intFromEnum(idx)];
     const new_offset: u64 = if (edge.is_end) old_offset else try self.calc_new_off(edge.top_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < old_offset) size - (old_offset - new_offset) else size + (new_offset - old_offset);
-    try self.shift_forward(first_adjust, edge.top_idx + 1, file);
+    try self.shift_forward(first_adjust, @enumFromInt(@intFromEnum(edge.top_idx) + 1), file);
 
     if (!edge.is_end) {
-        const top_off_idx = self.top_to_off[edge.top_idx];
-        const final_off_idx = if ((edge.top_idx + 1) == self.top_to_off.len) self.ranges.len else self.top_to_off[edge.top_idx + 1];
+        const top_off_idx = edge.top_idx.toOff(self.top_to_off).*;
+        const final_off_idx: OffIndex = if ((@intFromEnum(edge.top_idx) + 1) == self.top_to_off.len) @enumFromInt(self.ranges.len) else self.top_to_off[@intFromEnum(edge.top_idx) + 1];
 
         // TODO: consider the following
         // if (shoff_top_idx == edge.top_idx) {
         //     try self.set_ehdr_field(self.header.shoff + new_offset + size - old_offset, "shoff", file);
         // }
-        try shift.shift_forward(file, old_offset, old_offset + fileszs[idx], first_adjust);
+        try shift.shift_forward(file, old_offset, old_offset + fileszs[@intFromEnum(idx)], first_adjust);
 
-        offs[idx] = new_offset;
-        try self.set_filerange_field(idx, offs[idx], .off, file);
+        offs[@intFromEnum(idx)] = new_offset;
+        try self.set_filerange_field(idx, offs[@intFromEnum(idx)], .off, file);
 
-        for (top_off_idx + 1..final_off_idx) |off_idx| {
+        for (@intFromEnum(top_off_idx) + 1..@intFromEnum(final_off_idx)) |off_idx| {
             const index = self.off_to_range[off_idx];
             // TODO: consider the following:
             //
@@ -591,15 +593,15 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) !void
             //     addrs[index] -= size;
             //     offs[index] = new_offset;
             // } else {
-            offs[index] = offs[index] + first_adjust;
-            try self.set_filerange_field(index, offs[index], .off, file);
+            offs[@intFromEnum(index)] = offs[@intFromEnum(index)] + first_adjust;
+            try self.set_filerange_field(index, offs[@intFromEnum(index)], .off, file);
             // }
         }
-        addrs[idx] -= size;
-        try self.set_filerange_field(idx, addrs[idx], .addr, file);
+        addrs[@intFromEnum(idx)] -= size;
+        try self.set_filerange_field(idx, addrs[@intFromEnum(idx)], .addr, file);
     }
-    fileszs[idx] += size;
-    memszs[idx] += size;
+    fileszs[@intFromEnum(idx)] += size;
+    memszs[@intFromEnum(idx)] += size;
     // try self.set_filerange_field(idx, fileszs[idx], .filesz, file)
     // try self.set_filerange_field(idx, memszs[idx], .memsz, file)
     switch (self.range_type(idx)) {
@@ -775,7 +777,7 @@ const CompareContext = struct {
 };
 
 fn addr_compareFn(context: CompareContext, rhs: AddrIndex) std.math.Order {
-    return std.math.order(context.lhs, context.self.ranges.items(.addr)[context.self.addr_to_range[rhs]]);
+    return std.math.order(context.lhs, context.self.ranges.items(.addr)[@intFromEnum(rhs.toRange(context.self.addr_to_range[0..context.self.ranges.len]).*)]);
 }
 
 pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
@@ -783,7 +785,7 @@ pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
     const addrs = self.ranges.items(.addr);
     const fileszs = self.ranges.items(.filesz);
     const memszs = self.ranges.items(.memsz);
-    const containnig_idx = try self.addr_to_idx(addr);
+    const containnig_idx = @intFromEnum(try self.addr_to_idx(addr));
     if (addr >= (addrs[containnig_idx] + memszs[containnig_idx])) return Error.AddrNotMapped;
     const potenital_off = offs[containnig_idx] + addr - addrs[containnig_idx];
     if (potenital_off >= (offs[containnig_idx] + fileszs[containnig_idx])) return Error.NoMatchingOffset;
@@ -793,7 +795,7 @@ pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
 fn addr_to_idx(self: *const Modder, addr: u64) !RangeIndex {
     const lower_bound = std.sort.lowerBound(AddrIndex, self.load_to_addr, CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
     if (lower_bound == 0) return Error.AddrNotMapped;
-    return self.addr_to_range[self.load_to_addr[lower_bound - 1]];
+    return self.load_to_addr[lower_bound - 1].toRange(self.addr_to_range[0..self.ranges.len]).*;
 }
 
 fn top_off_compareFn(context: CompareContext, rhs: OffIndex) std.math.Order {
