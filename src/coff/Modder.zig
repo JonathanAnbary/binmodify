@@ -85,7 +85,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     if (ranges_count > std.math.maxInt(RangeIndex)) return Error.TooManyFileRanges;
     try ranges.setCapacity(gpa, ranges_count);
     ranges.appendAssumeCapacity(.{
-        .addr = image_base,
+        .addr = 0,
         .filesz = size_of_headers,
         .memsz = size_of_headers,
         .flags = .{},
@@ -104,23 +104,23 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
             },
         });
     }
-    const addr_to_range = try gpa.alloc(usize, ranges_count);
+    const addr_to_range = try gpa.alloc(RangeIndex, ranges_count);
     errdefer gpa.free(addr_to_range);
-    const off_to_range = try gpa.alloc(usize, ranges_count);
+    const off_to_range = try gpa.alloc(RangeIndex, ranges_count);
     errdefer gpa.free(off_to_range);
     for (0..ranges_count) |i| {
-        addr_to_range[i] = i;
-        off_to_range[i] = i;
+        addr_to_range[i] = @intCast(i);
+        off_to_range[i] = @intCast(i);
     }
-    std.sort.pdq(usize, addr_to_range, ranges, off_lessThanFn);
-    std.sort.pdq(usize, off_to_range, ranges, addr_lessThanFn);
-    const range_to_off = try gpa.alloc(usize, ranges_count);
+    std.sort.pdq(RangeIndex, addr_to_range, &ranges, off_lessThanFn);
+    std.sort.pdq(RangeIndex, off_to_range, &ranges, addr_lessThanFn);
+    const range_to_off = try gpa.alloc(OffIndex, ranges_count);
     errdefer gpa.free(range_to_off);
-    const range_to_addr = try gpa.alloc(usize, ranges_count);
+    const range_to_addr = try gpa.alloc(OffIndex, ranges_count);
     errdefer gpa.free(range_to_addr);
     for (off_to_range, addr_to_range, 0..) |off_idx, addr_idx, idx| {
-        range_to_off[off_idx] = idx;
-        range_to_addr[addr_idx] = idx;
+        range_to_off[off_idx] = @intCast(idx);
+        range_to_addr[addr_idx] = @intCast(idx);
     }
 
     // std.debug.print("\n", .{});
@@ -154,14 +154,14 @@ pub fn deinit(self: *Modder, gpa: std.mem.Allocator) void {
     gpa.free(self.range_to_off[0..self.ranges.len]);
     gpa.free(self.off_to_range[0..self.ranges.len]);
     gpa.free(self.addr_to_range[0..self.ranges.len]);
-    gpa.free(self.ranges);
+    self.ranges.deinit(gpa);
 }
 
 // Get an identifier for the location within the file where additional data could be inserted.
 // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
 pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) Error!?SecEdge {
     var i = self.ranges.len;
-    const flagss = self.ranges.items(.flag);
+    const flagss = self.ranges.items(.flags);
     const addrs = self.ranges.items(.addr);
     const memszs = self.ranges.items(.memsz);
     while (i > 0) {
@@ -224,6 +224,8 @@ fn set_sechdr_field(self: *Modder, index: RangeIndex, val: u64, comptime field_n
 pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytype) Error!void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
+    const memszs = self.ranges.items(.memsz);
+    const addrs = self.ranges.items(.addr);
     const offset = offs[edge.sec_idx];
     const new_offset: u64 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < offset) size - (offset - new_offset) else size + (new_offset - offset);
@@ -245,17 +247,22 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
         i -= 1;
         const curr_off_idx = i + (self.range_to_off[edge.sec_idx] + 1);
         const sec_idx = self.off_to_range[curr_off_idx];
-        try shift.shift_forward(parse_source, offs[sec_idx], offs[sec_idx] + fileszs[sec_idx].size_of_raw_data, self.adjustments[i]);
-        try self.set_sechdr_field(sec_idx, offs[sec_idx].pointer_to_raw_data + self.adjustments[i], "pointer_to_raw_data", parse_source);
+        try shift.shift_forward(parse_source, offs[sec_idx], offs[sec_idx] + fileszs[sec_idx], self.adjustments[i]);
+        offs[sec_idx] += self.adjustments[i];
+        try self.set_sechdr_field(sec_idx, offs[sec_idx], "pointer_to_raw_data", parse_source);
     }
 
     if (!edge.is_end) {
-        try shift.shift_forward(parse_source, self.sechdrs[edge.sec_idx].pointer_to_raw_data, self.sechdrs[edge.sec_idx].pointer_to_raw_data + self.sechdrs[edge.sec_idx].size_of_raw_data, new_offset + size - self.sechdrs[edge.sec_idx].pointer_to_raw_data);
-        try self.set_sechdr_field(edge.sec_idx, self.sechdrs[edge.sec_idx].virtual_address + self.adjustments[i], "virtual_address", parse_source);
-        try self.set_sechdr_field(edge.sec_idx, new_offset, "pointer_to_raw_data", parse_source);
+        try shift.shift_forward(parse_source, offs[edge.sec_idx], offs[edge.sec_idx] + fileszs[edge.sec_idx], new_offset + size - offs[edge.sec_idx]);
+        addrs[edge.sec_idx] += self.adjustments[i];
+        try self.set_sechdr_field(edge.sec_idx, addrs[edge.sec_idx], "virtual_address", parse_source);
+        offs[edge.sec_idx] = new_offset;
+        try self.set_sechdr_field(edge.sec_idx, offs[edge.sec_idx], "pointer_to_raw_data", parse_source);
     }
-    try self.set_sechdr_field(edge.sec_idx, self.sechdrs[edge.sec_idx].size_of_raw_data + size, "size_of_raw_data", parse_source);
-    try self.set_sechdr_field(edge.sec_idx, self.sechdrs[edge.sec_idx].virtual_size + size, "virtual_size", parse_source);
+    fileszs[edge.sec_idx] += size;
+    try self.set_sechdr_field(edge.sec_idx, fileszs[edge.sec_idx], "size_of_raw_data", parse_source);
+    memszs[edge.sec_idx] += size;
+    try self.set_sechdr_field(edge.sec_idx, memszs[edge.sec_idx] + size, "virtual_size", parse_source);
     // TODO: might need to adjust some more things.
 }
 
@@ -264,45 +271,57 @@ const CompareContext = struct {
     lhs: u64,
 };
 
-fn addr_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-    return std.math.order(context.lhs, context.self.sechdrs[context.self.addr_to_range[rhs]].virtual_address);
+fn addr_compareFn(context: CompareContext, rhs: AddrIndex) std.math.Order {
+    const addrs = context.self.ranges.items(.addr);
+    return std.math.order(context.lhs, addrs[context.self.addr_to_range[rhs]]);
 }
 
 pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
     const normalized_addr = if (addr < self.header.image_base) return Error.AddrNotMapped else addr - self.header.image_base;
     const containnig_idx = try self.addr_to_idx(normalized_addr);
-    if (!(normalized_addr < (self.sechdrs[containnig_idx].virtual_address + self.sechdrs[containnig_idx].virtual_size))) return Error.AddrNotMapped;
-    const potenital_off = self.sechdrs[containnig_idx].pointer_to_raw_data + normalized_addr - self.sechdrs[containnig_idx].virtual_address;
-    if (!(potenital_off < (self.sechdrs[containnig_idx].pointer_to_raw_data + self.sechdrs[containnig_idx].size_of_raw_data))) return Error.NoMatchingOffset;
+    const offs = self.ranges.items(.off);
+    const fileszs = self.ranges.items(.filesz);
+    const addrs = self.ranges.items(.addr);
+    const memszs = self.ranges.items(.memsz);
+    if (!(normalized_addr < (addrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
+    const potenital_off = offs[containnig_idx] + normalized_addr - addrs[containnig_idx];
+    if (!(potenital_off < (offs[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
     return potenital_off;
 }
 
-fn addr_to_idx(self: *const Modder, addr: u64) !usize {
+fn addr_to_idx(self: *const Modder, addr: u64) !RangeIndex {
     // const temp = std.sort.lowerBound(usize, self.addr_to_range[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
     // std.debug.print("\nself.sechdrs[self.addr_to_range[temp]].virtual_address = {X}\n", .{self.sechdrs[self.addr_to_range[temp]].virtual_address});
     // std.debug.print("addr = {X}\n", .{addr});
-    const lower_bound = std.sort.lowerBound(usize, self.addr_to_range[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
+    const lower_bound = std.sort.lowerBound(RangeIndex, self.addr_to_range[0..self.ranges.len], CompareContext{ .self = self, .lhs = addr + 1 }, addr_compareFn);
     if (lower_bound == 0) return Error.AddrNotMapped;
     return self.addr_to_range[lower_bound - 1];
 }
 
-fn off_compareFn(context: CompareContext, rhs: usize) std.math.Order {
-    return std.math.order(context.lhs, context.self.sechdrs[context.self.off_to_range[rhs]].pointer_to_raw_data);
+fn off_compareFn(context: CompareContext, rhs: OffIndex) std.math.Order {
+    const offs = context.self.ranges.items(.off);
+    return std.math.order(context.lhs, offs[context.self.off_to_range[rhs]]);
 }
 
 pub fn off_to_addr(self: *const Modder, off: u64) Error!u64 {
+    const offs = self.ranges.items(.off);
+    const fileszs = self.ranges.items(.filesz);
+    const addrs = self.ranges.items(.addr);
+    const memszs = self.ranges.items(.memsz);
     const containnig_idx = self.off_to_idx(off);
-    if (!(off < (self.sechdrs[containnig_idx].pointer_to_raw_data + self.sechdrs[containnig_idx].size_of_raw_data))) return Error.OffsetNotLoaded;
-    if ((self.sechdrs[containnig_idx].virtual_size < self.sechdrs[containnig_idx].size_of_raw_data) and ((self.sechdrs[containnig_idx].size_of_raw_data - self.sechdrs[containnig_idx].virtual_size) >= self.header.file_alignment)) return Error.VirtualSizeLessThenFileSize;
-    return self.header.image_base + self.sechdrs[containnig_idx].virtual_address + off - self.sechdrs[containnig_idx].pointer_to_raw_data;
+    if (!(off < (offs[containnig_idx] + fileszs[containnig_idx]))) return Error.OffsetNotLoaded;
+    if ((memszs[containnig_idx] < fileszs[containnig_idx]) and ((fileszs[containnig_idx] - memszs[containnig_idx]) >= self.header.file_alignment)) return Error.VirtualSizeLessThenFileSize;
+    return self.header.image_base + addrs[containnig_idx] + off - offs[containnig_idx];
 }
 
-fn off_to_idx(self: *const Modder, off: u64) usize {
-    return self.off_to_range[std.sort.lowerBound(usize, self.off_to_range[0..self.sechdrs.len], CompareContext{ .self = self, .lhs = off + 1 }, off_compareFn) - 1];
+fn off_to_idx(self: *const Modder, off: u64) RangeIndex {
+    return self.off_to_range[std.sort.lowerBound(RangeIndex, self.off_to_range[0..self.ranges.len], CompareContext{ .self = self, .lhs = off + 1 }, off_compareFn) - 1];
 }
 
-pub fn cave_to_off(self: Modder, cave: SecEdge, size: u64) u64 {
-    return self.sechdrs[cave.sec_idx].pointer_to_raw_data + if (cave.is_end) self.sechdrs[cave.sec_idx].size_of_raw_data - size else 0;
+pub fn cave_to_off(self: *const Modder, cave: SecEdge, size: u64) u64 {
+    const offs = self.ranges.items(.off);
+    const fileszs = self.ranges.items(.filesz);
+    return offs[cave.sec_idx] + if (cave.is_end) fileszs[cave.sec_idx] - size else 0;
 }
 
 test "create cave same output" {
@@ -333,7 +352,6 @@ test "create cave same output" {
     inline for (optimzes) |optimize| {
         inline for (targets) |target| {
             const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize ++ ".exe";
-            std.debug.print("\n{s}\n", .{test_with_cave_filename});
             {
                 const build_src_result = try std.process.Child.run(.{
                     .allocator = std.testing.allocator,
