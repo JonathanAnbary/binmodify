@@ -80,7 +80,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     };
     var ranges = std.MultiArrayList(FileRange){};
     errdefer ranges.deinit(gpa);
-    // + 1 for the sechdr table which appears to not be contained in any section/segment.
+    // + 1 for PE header.
     const ranges_count = coff_header.number_of_sections + 1;
     if (ranges_count > std.math.maxInt(RangeIndex)) return Error.TooManyFileRanges;
     try ranges.setCapacity(gpa, ranges_count);
@@ -254,7 +254,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
 
     if (!edge.is_end) {
         try shift.shift_forward(parse_source, offs[edge.sec_idx], offs[edge.sec_idx] + fileszs[edge.sec_idx], new_offset + size - offs[edge.sec_idx]);
-        addrs[edge.sec_idx] += self.adjustments[i];
+        addrs[edge.sec_idx] -= self.adjustments[i];
         try self.set_sechdr_field(edge.sec_idx, addrs[edge.sec_idx], "virtual_address", parse_source);
         offs[edge.sec_idx] = new_offset;
         try self.set_sechdr_field(edge.sec_idx, offs[edge.sec_idx], "pointer_to_raw_data", parse_source);
