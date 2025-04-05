@@ -69,7 +69,6 @@ range_to_addr: [*]AddrIndex,
 adjustments: [*]u64,
 
 pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) Error!Modder {
-    _ = parse_source;
     const coff_header = parsed_source.coff.getCoffHeader();
     const optional_header = parsed_source.coff.getOptionalHeader();
     const image_base = parsed_source.coff.getImageBase();
@@ -81,7 +80,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     var ranges = std.MultiArrayList(FileRange){};
     errdefer ranges.deinit(gpa);
     // + 1 for PE header.
-    const ranges_count = coff_header.number_of_sections + 1;
+    const ranges_count = coff_header.number_of_sections + 2;
     if (ranges_count > std.math.maxInt(RangeIndex)) return Error.TooManyFileRanges;
     try ranges.setCapacity(gpa, ranges_count);
     ranges.appendAssumeCapacity(.{
@@ -108,12 +107,27 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     errdefer gpa.free(addr_to_range);
     const off_to_range = try gpa.alloc(RangeIndex, ranges_count);
     errdefer gpa.free(off_to_range);
-    for (0..ranges_count) |i| {
-        addr_to_range[i] = @intCast(i);
+    for (0..ranges.len) |i| {
+        addr_to_range[i + 1] = @intCast(i);
         off_to_range[i] = @intCast(i);
     }
-    std.sort.pdq(RangeIndex, addr_to_range, &ranges, off_lessThanFn);
-    std.sort.pdq(RangeIndex, off_to_range, &ranges, addr_lessThanFn);
+    std.sort.pdq(RangeIndex, addr_to_range[1..ranges.len], &ranges, off_lessThanFn);
+    std.sort.pdq(RangeIndex, off_to_range[0 .. ranges.len - 1], &ranges, addr_lessThanFn);
+    const offs = ranges.items(.off);
+    const fileszs = ranges.items(.filesz);
+    const end_pos = try parse_source.getEndPos();
+    const last_off_range_idx = off_to_range[ranges.len - 1];
+    const overlay_off = offs[last_off_range_idx] + fileszs[last_off_range_idx];
+    const overlay_size = end_pos - overlay_off;
+    ranges.appendAssumeCapacity(.{
+        .addr = 0,
+        .filesz = overlay_size,
+        .memsz = 0,
+        .flags = .{},
+        .off = overlay_off,
+    });
+    off_to_range[ranges.len - 1] = @intCast(ranges.len - 1);
+    addr_to_range[0] = @intCast(ranges.len - 1);
     const range_to_off = try gpa.alloc(OffIndex, ranges_count);
     errdefer gpa.free(range_to_off);
     const range_to_addr = try gpa.alloc(OffIndex, ranges_count);
@@ -128,6 +142,11 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     //     std.debug.print("{X} - {X} - {X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_size, sechdr.pointer_to_raw_data, sechdr.size_of_raw_data });
     // }
 
+    std.debug.print("\n",.{});
+    for (addr_to_range) |range_idx|{
+        std.debug.print("")
+
+    }
     return Modder{
         .header = .{
             .file_alignment = switch (optional_header.magic) {
@@ -247,7 +266,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
         i -= 1;
         const curr_off_idx = i + (self.range_to_off[edge.sec_idx] + 1);
         const sec_idx = self.off_to_range[curr_off_idx];
-        try shift.shift_forward(parse_source, offs[sec_idx], offs[sec_idx] + fileszs[sec_idx], self.adjustments[i]);
+        // try shift.shift_forward(parse_source, offs[sec_idx], offs[sec_idx] + fileszs[sec_idx], self.adjustments[i]);
         offs[sec_idx] += self.adjustments[i];
         try self.set_sechdr_field(sec_idx, offs[sec_idx], "pointer_to_raw_data", parse_source);
     }
@@ -284,6 +303,7 @@ pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
     const addrs = self.ranges.items(.addr);
     const memszs = self.ranges.items(.memsz);
     if (!(normalized_addr < (addrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
+    std.debug.print("\n{X} + {X} - {X}\n", .{ offs[containnig_idx], normalized_addr, addrs[containnig_idx] });
     const potenital_off = offs[containnig_idx] + normalized_addr - addrs[containnig_idx];
     if (!(potenital_off < (offs[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
     return potenital_off;
