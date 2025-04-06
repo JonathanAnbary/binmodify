@@ -142,11 +142,6 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     //     std.debug.print("{X} - {X} - {X} - {X}\n", .{ sechdr.virtual_address, sechdr.virtual_size, sechdr.pointer_to_raw_data, sechdr.size_of_raw_data });
     // }
 
-    std.debug.print("\n",.{});
-    for (addr_to_range) |range_idx|{
-        std.debug.print("")
-
-    }
     return Modder{
         .header = .{
             .file_alignment = switch (optional_header.magic) {
@@ -228,7 +223,7 @@ fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u64) Error!u64 
 
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
-fn set_sechdr_field(self: *Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+fn set_sechdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
     const secidx = index - 1;
     const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + self.header.size_of_optional_header;
     try parse_source.seekTo(offset + @sizeOf(std.coff.SectionHeader) * secidx);
@@ -238,6 +233,18 @@ fn set_sechdr_field(self: *Modder, index: RangeIndex, val: u64, comptime field_n
     const temp2 = std.mem.toBytes(temp);
     if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
     // @field(self.sechdrs[index], field_name) = @intCast(val);
+}
+
+const RangeType: type = enum {
+    Section,
+    Headers,
+    Overlay,
+};
+
+fn get_range_type(self: *const Modder, index: RangeIndex) RangeType {
+    if (index == 0) return .Headers;
+    if (index == (self.ranges.len - 1)) return .Overlay;
+    return .Section;
 }
 
 pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytype) Error!void {
@@ -265,23 +272,36 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
     while (i > 0) {
         i -= 1;
         const curr_off_idx = i + (self.range_to_off[edge.sec_idx] + 1);
-        const sec_idx = self.off_to_range[curr_off_idx];
-        // try shift.shift_forward(parse_source, offs[sec_idx], offs[sec_idx] + fileszs[sec_idx], self.adjustments[i]);
-        offs[sec_idx] += self.adjustments[i];
-        try self.set_sechdr_field(sec_idx, offs[sec_idx], "pointer_to_raw_data", parse_source);
+        const range_idx = self.off_to_range[curr_off_idx];
+        try shift.shift_forward(parse_source, offs[range_idx], offs[range_idx] + fileszs[range_idx], self.adjustments[i]);
+        offs[range_idx] += self.adjustments[i];
+        switch (self.get_range_type(range_idx)) {
+            .Section => try self.set_sechdr_field(range_idx, offs[range_idx], "pointer_to_raw_data", parse_source),
+            else => {},
+        }
     }
 
     if (!edge.is_end) {
         try shift.shift_forward(parse_source, offs[edge.sec_idx], offs[edge.sec_idx] + fileszs[edge.sec_idx], new_offset + size - offs[edge.sec_idx]);
         addrs[edge.sec_idx] -= self.adjustments[i];
-        try self.set_sechdr_field(edge.sec_idx, addrs[edge.sec_idx], "virtual_address", parse_source);
         offs[edge.sec_idx] = new_offset;
-        try self.set_sechdr_field(edge.sec_idx, offs[edge.sec_idx], "pointer_to_raw_data", parse_source);
+        switch (self.get_range_type(edge.sec_idx)) {
+            .Section => {
+                try self.set_sechdr_field(edge.sec_idx, addrs[edge.sec_idx], "virtual_address", parse_source);
+                try self.set_sechdr_field(edge.sec_idx, offs[edge.sec_idx], "pointer_to_raw_data", parse_source);
+            },
+            else => {},
+        }
     }
     fileszs[edge.sec_idx] += size;
-    try self.set_sechdr_field(edge.sec_idx, fileszs[edge.sec_idx], "size_of_raw_data", parse_source);
     memszs[edge.sec_idx] += size;
-    try self.set_sechdr_field(edge.sec_idx, memszs[edge.sec_idx] + size, "virtual_size", parse_source);
+    switch (self.get_range_type(edge.sec_idx)) {
+        .Section => {
+            try self.set_sechdr_field(edge.sec_idx, fileszs[edge.sec_idx], "size_of_raw_data", parse_source);
+            try self.set_sechdr_field(edge.sec_idx, memszs[edge.sec_idx], "virtual_size", parse_source);
+        },
+        else => {},
+    }
     // TODO: might need to adjust some more things.
 }
 
@@ -290,9 +310,9 @@ const CompareContext = struct {
     lhs: u64,
 };
 
-fn addr_compareFn(context: CompareContext, rhs: AddrIndex) std.math.Order {
+fn addr_compareFn(context: CompareContext, rhs: RangeIndex) std.math.Order {
     const addrs = context.self.ranges.items(.addr);
-    return std.math.order(context.lhs, addrs[context.self.addr_to_range[rhs]]);
+    return std.math.order(context.lhs, addrs[rhs]);
 }
 
 pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
@@ -303,7 +323,6 @@ pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
     const addrs = self.ranges.items(.addr);
     const memszs = self.ranges.items(.memsz);
     if (!(normalized_addr < (addrs[containnig_idx] + memszs[containnig_idx]))) return Error.AddrNotMapped;
-    std.debug.print("\n{X} + {X} - {X}\n", .{ offs[containnig_idx], normalized_addr, addrs[containnig_idx] });
     const potenital_off = offs[containnig_idx] + normalized_addr - addrs[containnig_idx];
     if (!(potenital_off < (offs[containnig_idx] + fileszs[containnig_idx]))) return Error.NoMatchingOffset;
     return potenital_off;
@@ -318,9 +337,9 @@ fn addr_to_idx(self: *const Modder, addr: u64) !RangeIndex {
     return self.addr_to_range[lower_bound - 1];
 }
 
-fn off_compareFn(context: CompareContext, rhs: OffIndex) std.math.Order {
+fn off_compareFn(context: CompareContext, rhs: RangeIndex) std.math.Order {
     const offs = context.self.ranges.items(.off);
-    return std.math.order(context.lhs, offs[context.self.off_to_range[rhs]]);
+    return std.math.order(context.lhs, offs[rhs]);
 }
 
 pub fn off_to_addr(self: *const Modder, off: u64) Error!u64 {

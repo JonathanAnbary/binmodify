@@ -217,7 +217,6 @@ test "coff nop patch no difference" {
     inline for (optimzes) |optimize| {
         inline for (targets, nops) |target, nop| {
             const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize ++ ".exe";
-
             {
                 const build_src_result = try std.process.Child.run(.{
                     .allocator = std.testing.allocator,
