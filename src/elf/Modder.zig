@@ -1069,7 +1069,7 @@ test "repeated cave expansion equal to single cave" {
 
 test "create segment same output" {
     if (builtin.os.tag != .linux) {
-        error.SkipZigTest;
+        return error.SkipZigTest;
     }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./create_segment_same_output_elf";
