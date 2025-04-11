@@ -342,7 +342,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
     return null;
 }
 
-fn set_shdr_field(self: *Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, file: anytype) !void {
+fn set_shdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, file: anytype) !void {
     if (index >= self.header.shnum) return Error.OutOfBoundField;
     try file.seekTo(self.header.shoff + self.header.shentsize * index);
     if (self.header.is_64) {
@@ -386,7 +386,7 @@ fn set_ehdr_field(self: *Modder, val: u64, comptime field_name: []const u8, file
 
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
-fn set_phdr_field(self: *Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, file: anytype) !void {
+fn set_phdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, file: anytype) !void {
     if (index >= self.header.phnum) return Error.OutOfBoundField;
     try file.seekTo(self.header.phoff + self.header.phentsize * index);
     if (self.header.is_64) {
@@ -1068,9 +1068,6 @@ test "repeated cave expansion equal to single cave" {
 }
 
 test "create segment same output" {
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
-    }
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./create_segment_same_output_elf";
     const cwd: std.fs.Dir = std.fs.cwd();
@@ -1086,13 +1083,18 @@ test "create segment same output" {
         try std.testing.expect(build_src_result.stderr.len == 0);
     }
 
-    // check regular output.
-    const no_cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{test_with_cave},
-    });
-    defer std.testing.allocator.free(no_cave_result.stdout);
-    defer std.testing.allocator.free(no_cave_result.stderr);
+    var maybe_no_cave_result: ?std.process.Child.RunResult = null;
+    if (builtin.os.tag == .linux) {
+        // check regular output.
+        maybe_no_cave_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{test_with_cave},
+        });
+    }
+    defer if (maybe_no_cave_result) |no_cave_result| {
+        std.testing.allocator.free(no_cave_result.stdout);
+        std.testing.allocator.free(no_cave_result.stderr);
+    };
 
     {
         var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
@@ -1104,6 +1106,9 @@ test "create segment same output" {
         defer elf_modder.deinit(std.testing.allocator);
         try elf_modder.create_segment(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
     }
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
+    }
 
     // check output with a cave
     const cave_result = try std.process.Child.run(.{
@@ -1113,8 +1118,8 @@ test "create segment same output" {
     defer std.testing.allocator.free(cave_result.stdout);
     defer std.testing.allocator.free(cave_result.stderr);
     try std.testing.expect(cave_result.term == .Exited);
-    try std.testing.expect(no_cave_result.term == .Exited);
-    try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-    try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-    try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
+    try std.testing.expect(maybe_no_cave_result.?.term == .Exited);
+    try std.testing.expectEqual(cave_result.term.Exited, maybe_no_cave_result.?.term.Exited);
+    try std.testing.expectEqualStrings(cave_result.stdout, maybe_no_cave_result.?.stdout);
+    try std.testing.expectEqualStrings(cave_result.stderr, maybe_no_cave_result.?.stderr);
 }

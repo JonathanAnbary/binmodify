@@ -28,6 +28,7 @@ pub const Error = error{
     IntersectingFileRanges,
     UnexpectedEof,
     VirtualSizeLessThenFileSize,
+    FieldNotAdjustable,
 } || shift.Error || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError || std.coff.CoffError || std.mem.Allocator.Error;
 
 pub const SecEdge: type = struct {
@@ -38,6 +39,7 @@ pub const SecEdge: type = struct {
 pub const EdgeType = SecEdge;
 
 const SectionHeaderFields = std.meta.FieldEnum(std.coff.SectionHeader);
+const CoffHeaderFields = std.meta.FieldEnum(std.coff.CoffHeader);
 
 const PartialHeader = struct {
     file_alignment: u32,
@@ -221,6 +223,15 @@ fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u64) Error!u64 
     return new_offset;
 }
 
+fn set_image_file_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+    const offset = self.header.coff_header_offset + @offsetOf(std.coff.CoffHeader, field_name);
+    try parse_source.seekTo(offset);
+    const T = std.meta.fieldInfo(std.coff.CoffHeader, @field(CoffHeaderFields, field_name)).type;
+    const temp: T = @intCast(val);
+    const temp2 = std.mem.toBytes(temp);
+    if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+}
+
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
 fn set_sechdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
@@ -235,13 +246,35 @@ fn set_sechdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime f
     // @field(self.sechdrs[index], field_name) = @intCast(val);
 }
 
+fn set_filerange_field(self: *const Modder, index: RangeIndex, val: u64, comptime field: std.meta.FieldEnum(FileRange), file: anytype) !void {
+    switch (self.range_type(index)) {
+        .Headers => return Error.FieldNotAdjustable,
+        .Section => {
+            const fieldname = switch (field) {
+                .off => "pointer_to_raw_data",
+                .addr => "virtual_address",
+                .filesz => "size_of_raw_data",
+                .memsz => "virtual_size",
+                else => return Error.FieldNotAdjustable,
+            };
+            try self.set_sechdr_field(index, val, fieldname, file);
+        },
+        .Overlay => {
+            switch (field) {
+                .off => try self.set_image_file_header_field(val, "pointer_to_symbol_table", file),
+                else => return Error.FieldNotAdjustable,
+            }
+        },
+    }
+}
+
 const RangeType: type = enum {
     Section,
     Headers,
     Overlay,
 };
 
-fn get_range_type(self: *const Modder, index: RangeIndex) RangeType {
+fn range_type(self: *const Modder, index: RangeIndex) RangeType {
     if (index == 0) return .Headers;
     if (index == (self.ranges.len - 1)) return .Overlay;
     return .Section;
@@ -275,33 +308,20 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
         const range_idx = self.off_to_range[curr_off_idx];
         try shift.shift_forward(parse_source, offs[range_idx], offs[range_idx] + fileszs[range_idx], self.adjustments[i]);
         offs[range_idx] += self.adjustments[i];
-        switch (self.get_range_type(range_idx)) {
-            .Section => try self.set_sechdr_field(range_idx, offs[range_idx], "pointer_to_raw_data", parse_source),
-            else => {},
-        }
+        try self.set_filerange_field(range_idx, offs[range_idx], .off, parse_source);
     }
 
     if (!edge.is_end) {
         try shift.shift_forward(parse_source, offs[edge.sec_idx], offs[edge.sec_idx] + fileszs[edge.sec_idx], new_offset + size - offs[edge.sec_idx]);
         addrs[edge.sec_idx] -= self.adjustments[i];
+        try self.set_filerange_field(edge.sec_idx, addrs[edge.sec_idx], .addr, parse_source);
         offs[edge.sec_idx] = new_offset;
-        switch (self.get_range_type(edge.sec_idx)) {
-            .Section => {
-                try self.set_sechdr_field(edge.sec_idx, addrs[edge.sec_idx], "virtual_address", parse_source);
-                try self.set_sechdr_field(edge.sec_idx, offs[edge.sec_idx], "pointer_to_raw_data", parse_source);
-            },
-            else => {},
-        }
+        try self.set_filerange_field(edge.sec_idx, offs[edge.sec_idx], .off, parse_source);
     }
     fileszs[edge.sec_idx] += size;
+    try self.set_filerange_field(edge.sec_idx, fileszs[edge.sec_idx], .filesz, parse_source);
     memszs[edge.sec_idx] += size;
-    switch (self.get_range_type(edge.sec_idx)) {
-        .Section => {
-            try self.set_sechdr_field(edge.sec_idx, fileszs[edge.sec_idx], "size_of_raw_data", parse_source);
-            try self.set_sechdr_field(edge.sec_idx, memszs[edge.sec_idx], "virtual_size", parse_source);
-        },
-        else => {},
-    }
+    try self.set_filerange_field(edge.sec_idx, memszs[edge.sec_idx], .memsz, parse_source);
     // TODO: might need to adjust some more things.
 }
 
