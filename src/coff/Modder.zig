@@ -40,12 +40,27 @@ pub const EdgeType = SecEdge;
 
 const SectionHeaderFields = std.meta.FieldEnum(std.coff.SectionHeader);
 const CoffHeaderFields = std.meta.FieldEnum(std.coff.CoffHeader);
+const OptionalHeaderFields = std.meta.FieldEnum(std.coff.OptionalHeader);
 
 const PartialHeader = struct {
     file_alignment: u32,
     image_base: u64,
     coff_header_offset: usize,
     size_of_optional_header: u16,
+    size_of_code: u32,
+    size_of_initialized_data: u32,
+    size_of_uninitialized_data: u32,
+};
+
+const SectionFlags = packed struct {
+    /// The section contains executable code.
+    CNT_CODE: u1 = 0,
+
+    /// The section contains initialized data.
+    CNT_INITIALIZED_DATA: u1 = 0,
+
+    /// The section contains uninitialized data.
+    CNT_UNINITIALIZED_DATA: u1 = 0,
 };
 
 const FileRange: type = struct {
@@ -54,6 +69,7 @@ const FileRange: type = struct {
     addr: u64, // TODO: should be nullable
     memsz: u64,
     flags: FileRangeFlags,
+    section_flags: SectionFlags,
 };
 
 const Modder = @This();
@@ -90,6 +106,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
         .filesz = size_of_headers,
         .memsz = size_of_headers,
         .flags = .{},
+        .section_flags = .{},
         .off = 0,
     });
     for (parsed_source.coff.getSectionHeaders()) |sechdr| {
@@ -102,6 +119,11 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
                 .execute = sechdr.flags.MEM_EXECUTE == 1,
                 .read = sechdr.flags.MEM_READ == 1,
                 .write = sechdr.flags.MEM_WRITE == 1,
+            },
+            .section_flags = .{
+                .CNT_CODE = sechdr.flags.CNT_CODE,
+                .CNT_INITIALIZED_DATA = sechdr.flags.CNT_INITIALIZED_DATA,
+                .CNT_UNINITIALIZED_DATA = sechdr.flags.CNT_UNINITIALIZED_DATA,
             },
         });
     }
@@ -126,6 +148,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
         .filesz = overlay_size,
         .memsz = 0,
         .flags = .{},
+        .section_flags = .{},
         .off = overlay_off,
     });
     off_to_range[ranges.len - 1] = @intCast(ranges.len - 1);
@@ -154,6 +177,9 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
             .image_base = image_base,
             .coff_header_offset = parsed_source.coff.coff_header_offset,
             .size_of_optional_header = parsed_source.coff.getCoffHeader().size_of_optional_header,
+            .size_of_code = parsed_source.coff.getOptionalHeader().size_of_code,
+            .size_of_initialized_data = parsed_source.coff.getOptionalHeader().size_of_initialized_data,
+            .size_of_uninitialized_data = parsed_source.coff.getOptionalHeader().size_of_uninitialized_data,
         },
         .ranges = ranges,
         .addr_to_range = addr_to_range.ptr,
@@ -232,6 +258,15 @@ fn set_image_file_header_field(self: *const Modder, val: u64, comptime field_nam
     if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
 }
 
+fn set_image_optional_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+    const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + @offsetOf(std.coff.OptionalHeader, field_name);
+    try parse_source.seekTo(offset);
+    const T = std.meta.fieldInfo(std.coff.OptionalHeader, @field(std.coff.OptionalHeader, field_name)).type;
+    const temp: T = @intCast(val);
+    const temp2 = std.mem.toBytes(temp);
+    if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+}
+
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
 fn set_sechdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
@@ -285,6 +320,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
     const fileszs = self.ranges.items(.filesz);
     const memszs = self.ranges.items(.memsz);
     const addrs = self.ranges.items(.addr);
+    const section_flagss = self.ranges.items(.section_flags);
     const offset = offs[edge.sec_idx];
     const new_offset: u64 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < offset) size - (offset - new_offset) else size + (new_offset - offset);
@@ -322,6 +358,18 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
     try self.set_filerange_field(edge.sec_idx, fileszs[edge.sec_idx], .filesz, parse_source);
     memszs[edge.sec_idx] += size;
     try self.set_filerange_field(edge.sec_idx, memszs[edge.sec_idx], .memsz, parse_source);
+    if (section_flagss[edge.sec_idx].CNT_CODE == 1) {
+        self.header.size_of_code += size;
+        try self.set_image_optional_header_field(self.header.size_of_code, "size_of_code", parse_source);
+    }
+    if (section_flagss[edge.sec_idx].CNT_INITIALIZED == 1) {
+        self.header.size_of_initialized_data += size;
+        try self.set_image_optional_header_field(self.header.size_of_initialized_data, "size_of_initialized_data", parse_source);
+    }
+    if (section_flagss[edge.sec_idx].CNT_UNINITIALIZED == 1) {
+        self.header.size_of_uninitialized_data += size;
+        try self.set_image_optional_header_field(self.header.size_of_uninitialized_data, "size_of_uninitialized_data", parse_source);
+    }
     // TODO: might need to adjust some more things.
 }
 
