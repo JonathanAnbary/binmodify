@@ -30,18 +30,19 @@ pub fn main() !void {
     const alloc = gpa.allocator();
 
     const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
 
     var args = try std.process.argsWithAllocator(alloc);
     defer args.deinit();
-    _ = args.next() orelse return arg_err(stdout.any());
+    _ = args.next() orelse return arg_err(stderr.any());
 
-    const to_patch = args.next() orelse return arg_err(stdout.any());
-    const patch_addr_str = args.next() orelse return arg_err(stdout.any());
+    const to_patch = args.next() orelse return arg_err(stderr.any());
+    const patch_addr_str = args.next() orelse return arg_err(stderr.any());
     const patch_addr = std.fmt.parseUnsigned(u64, patch_addr_str, 0) catch |err| {
-        return stdout.print("failed to parse {s} as u32 (err - {})\n", .{ patch_addr_str, err });
+        return stderr.print("failed to parse {s} as u32 (err - {})\n", .{ patch_addr_str, err });
     };
-    const wanted_patch_hex = args.next() orelse return arg_err(stdout.any());
-    if (wanted_patch_hex.len == 0) return stdout.print("<patch> must be hex bytes", .{});
+    const wanted_patch_hex = args.next() orelse return arg_err(stderr.any());
+    if (wanted_patch_hex.len == 0) return stderr.print("<patch> must be hex bytes", .{});
     const patch_buf = try alloc.alloc(u8, @divFloor(wanted_patch_hex.len, 2));
     defer alloc.free(patch_buf);
     const wanted_patch = try std.fmt.hexToBytes(patch_buf, wanted_patch_hex);
@@ -59,18 +60,18 @@ pub fn main() !void {
         const parsed = CoffParsed.init(coff);
         var patcher = try patch.Patcher(CoffModder, capstone.Disasm).init(alloc, &f, &parsed);
         defer patcher.deinit(alloc);
-        std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
+        try stdout.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
         _ = try patcher.pure_patch(patch_addr, wanted_patch, &f);
-        std.debug.print("Patch done\n", .{});
+        try stdout.print("Patch done\n", .{});
     } else {
         if ((try f.read(buf[MZ.len..ELF.len])) != (ELF.len - MZ.len)) return Error.FileTypeNotSupported;
         if (std.mem.eql(u8, buf[0..ELF.len], ELF)) {
             const parsed = try ElfParsed.init(&f);
             var patcher = try patch.Patcher(ElfModder, capstone.Disasm).init(alloc, &f, &parsed);
             defer patcher.deinit(alloc);
-            std.debug.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
+            try stdout.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
             _ = try patcher.pure_patch(patch_addr, wanted_patch, &f);
-            std.debug.print("Patch done\n", .{});
+            try stdout.print("Patch done\n", .{});
         }
     }
 }
