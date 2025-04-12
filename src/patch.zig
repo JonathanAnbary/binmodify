@@ -11,6 +11,12 @@ pub const PatchInfo: type = extern struct {
     cave_size: u64,
 };
 
+pub const Error = error{
+    NoFreeSpace,
+    UnexpectedEof,
+    PatchTooLarge,
+};
+
 /// Provides pure_patch() which allows for inserting inline hooks in the given executable.
 /// Disasm needs to expose min_insn_size(self: *Self, size: u64, code: []const u8, addr: u64) u64, which returns size rounded up to the nearest instruction.
 /// Modder needs to expose addr_to_off(addr: u64), get_cave_option(size: u64, file_range_flags: FileRangeFlags), create_cave(cave_size: u64, cave_option: ret<get_cave_option>, stream: anytype), cave_to_off(cave_option: ret<get_cave_option>, cave_size: u64), off_to_addr(off:u64).
@@ -23,8 +29,6 @@ pub fn Patcher(Modder: type, Disasm: type) type {
         disasm: Disasm,
 
         const Self = @This();
-        pub const Error = error{ NoFreeSpace, UnexpectedEof };
-
         /// assumes that `parsed` contains information that is true for `reader`.
         /// `parsed` must provde `get_arch()`, `get_mode()`, `get_endian()` and be compatible with the `Modder` init function.
         pub fn init(
@@ -78,7 +82,10 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             );
             const insn_to_move_siz = self.disasm.min_insn_size(ctl_transfer_size, buff[0..max], addr);
             std.debug.assert(insn_to_move_siz < buff.len);
-            const cave_size = patch.len + insn_to_move_siz + ctl_transfer_size;
+            if (patch.len + insn_to_move_siz + ctl_transfer_size > std.math.maxInt(u32)) {
+                return Error.PatchTooLarge;
+            }
+            const cave_size: u32 = @intCast(patch.len + insn_to_move_siz + ctl_transfer_size);
             const cave_option = (try self.modder.get_cave_option(cave_size, .{ .read = true, .execute = true })) orelse return Error.NoFreeSpace;
             try self.modder.create_cave(cave_size, cave_option, stream);
 
@@ -403,7 +410,7 @@ test "coff fizzbuzz fizz always" {
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
-        try f.seekTo(0x4E1);
+        try f.seekTo(0x4DC);
         const overwrite = [_]u8{0x83}; // changing je to jae
         try std.testing.expectEqual(overwrite.len, try f.write(&overwrite));
         try f.seekTo(0);
@@ -415,7 +422,7 @@ test "coff fizzbuzz fizz always" {
         const parsed = CoffParsed.init(coff);
         var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
         defer patcher.deinit(std.testing.allocator);
-        _ = try patcher.pure_patch(0x1400010E6, &patch, &f);
+        _ = try patcher.pure_patch(0x1400010E1, &patch, &f);
     }
 
     if (builtin.os.tag != .windows) {

@@ -261,7 +261,7 @@ fn set_image_file_header_field(self: *const Modder, val: u64, comptime field_nam
 fn set_image_optional_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
     const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + @offsetOf(std.coff.OptionalHeader, field_name);
     try parse_source.seekTo(offset);
-    const T = std.meta.fieldInfo(std.coff.OptionalHeader, @field(std.coff.OptionalHeader, field_name)).type;
+    const T = std.meta.fieldInfo(std.coff.OptionalHeader, @field(OptionalHeaderFields, field_name)).type;
     const temp: T = @intCast(val);
     const temp2 = std.mem.toBytes(temp);
     if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
@@ -315,7 +315,7 @@ fn range_type(self: *const Modder, index: RangeIndex) RangeType {
     return .Section;
 }
 
-pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytype) Error!void {
+pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytype) Error!void {
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
     const memszs = self.ranges.items(.memsz);
@@ -362,11 +362,11 @@ pub fn create_cave(self: *Modder, size: u64, edge: SecEdge, parse_source: anytyp
         self.header.size_of_code += size;
         try self.set_image_optional_header_field(self.header.size_of_code, "size_of_code", parse_source);
     }
-    if (section_flagss[edge.sec_idx].CNT_INITIALIZED == 1) {
+    if (section_flagss[edge.sec_idx].CNT_INITIALIZED_DATA == 1) {
         self.header.size_of_initialized_data += size;
         try self.set_image_optional_header_field(self.header.size_of_initialized_data, "size_of_initialized_data", parse_source);
     }
-    if (section_flagss[edge.sec_idx].CNT_UNINITIALIZED == 1) {
+    if (section_flagss[edge.sec_idx].CNT_UNINITIALIZED_DATA == 1) {
         self.header.size_of_uninitialized_data += size;
         try self.set_image_optional_header_field(self.header.size_of_uninitialized_data, "size_of_uninitialized_data", parse_source);
     }

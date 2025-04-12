@@ -97,9 +97,10 @@ pub const Result: type = enum(u8) {
     PhdrTablePhdrNotFound,
     NoSpaceToExtendPhdrTable,
     TooManyFileRanges,
+    PatchTooLarge,
 };
 
-const AllError = ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error;
+const AllError = patch.Error || ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error;
 
 pub fn err_to_res(e: AllError) Result {
     return switch (e) {
@@ -181,6 +182,7 @@ pub fn err_to_res(e: AllError) Result {
         AllError.PhdrTablePhdrNotFound => .PhdrTablePhdrNotFound,
         AllError.NoSpaceToExtendPhdrTable => .NoSpaceToExtendPhdrTable,
         AllError.TooManyFileRanges => .TooManyFileRanges,
+        AllError.PatchTooLarge => .PatchTooLarge,
     };
 }
 
