@@ -238,7 +238,7 @@ test "coff nop patch no difference" {
             {
                 var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
                 defer f.close();
-                const patch = nop ** 50;
+                const patch = nop ** 0x200;
                 const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
                 defer std.testing.allocator.free(data);
                 try std.testing.expectEqual(f.getEndPos(), try f.read(data));

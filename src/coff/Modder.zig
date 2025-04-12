@@ -474,7 +474,7 @@ test "create cave same output" {
                 var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
                 defer f.close();
                 var stream = std.io.StreamSource{ .file = f };
-                const wanted_size = 0x100;
+                const wanted_size = 0x200;
                 const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
                 defer std.testing.allocator.free(data);
                 try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
