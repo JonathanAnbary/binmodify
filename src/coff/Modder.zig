@@ -211,12 +211,18 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
         const range_idx = self.off_to_range[i];
         if (flagss[range_idx] != flags) continue;
         // NOTE: this assumes you dont have an upper bound on possible memory address.
+        const next_range_idx = self.addr_to_range[self.range_to_addr[range_idx] + 1];
+        std.debug.print("\nrange_idx = {}, next_range_idx = {}\n", .{ range_idx, next_range_idx });
+        std.debug.print("range_idx_addr = {X}, next_range_idx = {X}\n", .{ addrs[range_idx], addrs[next_range_idx] });
+        std.debug.print("end range - {X} < {X}\n", .{ (addrs[range_idx] + memszs[range_idx] + wanted_size), addrs[next_range_idx] });
         if ((self.range_to_addr[range_idx] == (self.ranges.len - 1)) or
-            ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[self.range_to_addr[range_idx] + 1])) return SecEdge{
+            ((addrs[range_idx] + memszs[range_idx] + wanted_size) < addrs[next_range_idx])) return SecEdge{
             .sec_idx = range_idx,
             .is_end = true,
         };
-        const prev_sec_mem_bound = (if (self.range_to_addr[range_idx] == 0) 0 else (addrs[self.range_to_addr[range_idx] - 1] + memszs[self.range_to_addr[range_idx] - 1]));
+        const addr_idx = self.range_to_addr[range_idx];
+        const prev_sec_mem_bound = (if (addr_idx == 0) 0 else (addrs[self.addr_to_range[addr_idx - 1]] + memszs[self.addr_to_range[addr_idx - 1]]));
+        std.debug.print("start range - {X} > {X}\n", .{ addrs[range_idx], (wanted_size + prev_sec_mem_bound) });
         if (addrs[range_idx] > (wanted_size + prev_sec_mem_bound)) return SecEdge{
             .sec_idx = range_idx,
             .is_end = false,
@@ -230,7 +236,7 @@ fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u64) Error!u64 
     // and for the case of a start edge whith enough space from the previous segment offset.
     const offs = self.ranges.items(.off);
     const fileszs = self.ranges.items(.filesz);
-    const align_offset = (offs[index] + (self.header.file_alignment - (size % self.header.file_alignment))) % self.header.file_alignment;
+    const aligned_size = if ((size % self.header.file_alignment) != 0) size + self.header.file_alignment - (size % self.header.file_alignment) else size;
     const prev_off_end = blk: {
         const off_idx = self.range_to_off[index];
         if (off_idx > 0) {
@@ -238,14 +244,11 @@ fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u64) Error!u64 
             break :blk offs[temp] + fileszs[temp];
         } else break :blk 0;
     };
-    if (prev_off_end > fileszs[index]) return Error.IntersectingFileRanges;
-    const new_offset = if (offs[index] > (size + prev_off_end))
-        (offs[index] - size)
+    if (prev_off_end > offs[index]) return Error.IntersectingFileRanges;
+    const new_offset = if (offs[index] > (aligned_size + prev_off_end))
+        (offs[index] - aligned_size)
     else
-        (prev_off_end + (if ((prev_off_end % self.header.file_alignment) <= align_offset)
-            (align_offset)
-        else
-            (self.header.file_alignment + align_offset)) - (prev_off_end % self.header.file_alignment));
+        offs[index];
     return new_offset;
 }
 
@@ -323,15 +326,14 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
     const section_flagss = self.ranges.items(.section_flags);
     const offset = offs[edge.sec_idx];
     const new_offset: u64 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
-    const first_adjust = if (edge.is_end) size else if (new_offset < offset) size - (offset - new_offset) else size + (new_offset - offset);
-    var needed_size = first_adjust;
+    var needed_size = size + new_offset - offset;
 
     var off_idx = self.range_to_off[edge.sec_idx] + 1;
     while (off_idx < self.ranges.len) : (off_idx += 1) {
         const sec_idx = self.off_to_range[off_idx];
         const prev_off_sec_idx = self.off_to_range[off_idx - 1];
         // TODO: should consider calculating the padding and treating it as overwritable.
-        const existing_gap = offs[sec_idx] - (offs[prev_off_sec_idx] + fileszs[prev_off_sec_idx]);
+        const existing_gap = offs[sec_idx] - (offs[prev_off_sec_idx] + @min(fileszs[prev_off_sec_idx], memszs[prev_off_sec_idx]));
         if (needed_size < existing_gap) break;
         needed_size -= existing_gap;
         if ((needed_size % self.header.file_alignment) != 0) needed_size += self.header.file_alignment - (needed_size % self.header.file_alignment);
@@ -342,32 +344,39 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
         i -= 1;
         const curr_off_idx = i + (self.range_to_off[edge.sec_idx] + 1);
         const range_idx = self.off_to_range[curr_off_idx];
-        try shift.shift_forward(parse_source, offs[range_idx], offs[range_idx] + fileszs[range_idx], self.adjustments[i]);
+        try shift.shift_forward(parse_source, offs[range_idx], offs[range_idx] + @min(fileszs[range_idx], memszs[range_idx]), self.adjustments[i]);
         offs[range_idx] += self.adjustments[i];
         try self.set_filerange_field(range_idx, offs[range_idx], .off, parse_source);
     }
 
     if (!edge.is_end) {
-        try shift.shift_forward(parse_source, offs[edge.sec_idx], offs[edge.sec_idx] + fileszs[edge.sec_idx], new_offset + size - offs[edge.sec_idx]);
-        addrs[edge.sec_idx] -= self.adjustments[i];
+        try shift.shift_forward(parse_source, offs[edge.sec_idx], offs[edge.sec_idx] + @min(fileszs[edge.sec_idx], memszs[edge.sec_idx]), new_offset + size - offs[edge.sec_idx]);
+        addrs[edge.sec_idx] -= size;
         try self.set_filerange_field(edge.sec_idx, addrs[edge.sec_idx], .addr, parse_source);
         offs[edge.sec_idx] = new_offset;
         try self.set_filerange_field(edge.sec_idx, offs[edge.sec_idx], .off, parse_source);
     }
-    fileszs[edge.sec_idx] += size;
-    try self.set_filerange_field(edge.sec_idx, fileszs[edge.sec_idx], .filesz, parse_source);
+    const filesz_adjust: u32 = blk: {
+        if ((fileszs[edge.sec_idx] - memszs[edge.sec_idx]) < size) {
+            const needed_filsz: u32 = @intCast(size - (fileszs[edge.sec_idx] - memszs[edge.sec_idx]));
+            const res = needed_filsz + if (needed_filsz % self.header.file_alignment != 0) self.header.file_alignment - (needed_filsz % self.header.file_alignment) else 0;
+            fileszs[edge.sec_idx] += res;
+            try self.set_filerange_field(edge.sec_idx, fileszs[edge.sec_idx], .filesz, parse_source);
+            break :blk res;
+        } else break :blk 0;
+    };
     memszs[edge.sec_idx] += size;
     try self.set_filerange_field(edge.sec_idx, memszs[edge.sec_idx], .memsz, parse_source);
     if (section_flagss[edge.sec_idx].CNT_CODE == 1) {
-        self.header.size_of_code += size;
+        self.header.size_of_code += filesz_adjust;
         try self.set_image_optional_header_field(self.header.size_of_code, "size_of_code", parse_source);
     }
     if (section_flagss[edge.sec_idx].CNT_INITIALIZED_DATA == 1) {
-        self.header.size_of_initialized_data += size;
+        self.header.size_of_initialized_data += filesz_adjust;
         try self.set_image_optional_header_field(self.header.size_of_initialized_data, "size_of_initialized_data", parse_source);
     }
     if (section_flagss[edge.sec_idx].CNT_UNINITIALIZED_DATA == 1) {
-        self.header.size_of_uninitialized_data += size;
+        self.header.size_of_uninitialized_data += filesz_adjust;
         try self.set_image_optional_header_field(self.header.size_of_uninitialized_data, "size_of_uninitialized_data", parse_source);
     }
     // TODO: might need to adjust some more things.
