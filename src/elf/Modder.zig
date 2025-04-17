@@ -6,6 +6,7 @@ const elf = std.elf;
 
 const builtin = @import("builtin");
 const native_endian = builtin.target.cpu.arch.endian();
+const utils = @import("../utils.zig");
 
 const shift = @import("../shift.zig");
 const FileRangeFlags = @import("../file_range_flags.zig").FileRangeFlags;
@@ -921,8 +922,9 @@ comptime {
     const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64", "qemu-arm" };
     for (optimzes) |optimize| {
         for (targets, qemus) |target, qemu| {
+            if (!utils.should_add_test("elf create cave same output " ++ target ++ optimize)) continue;
             _ = struct {
-                test "elf create cave same output" {
+                test {
                     const test_src_path = "./tests/hello_world.zig";
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
                     const expected_stderr = "All your codebase are belong to us.\n";

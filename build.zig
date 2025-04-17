@@ -8,6 +8,14 @@ pub fn build(b: *std.Build) void {
     const shared = b.option(bool, "shared", "Build as a shared library") orelse false;
     const strip = b.option(bool, "strip", "Omit debug information");
     const pic = b.option(bool, "pic", "Produce Position Independent Code");
+    const test_filters: []const []const u8 = b.option(
+        []const []const u8,
+        "test-filter",
+        "Skip tests that do not match any of the specified filters",
+    ) orelse &.{};
+
+    const options = b.addOptions();
+    options.addOption([]const []const u8, "test_filters", test_filters);
 
     const capstone_dependency = b.dependency("capstone", .{
         .target = target,
@@ -23,6 +31,8 @@ pub fn build(b: *std.Build) void {
         .pic = pic,
     });
 
+    lib_mod.addOptions("config", options);
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -33,6 +43,7 @@ pub fn build(b: *std.Build) void {
 
     exe_mod.linkLibrary(capstone_dependency.artifact("capstone"));
     exe_mod.addImport("binmodify", lib_mod);
+    exe_mod.addOptions("config", options);
 
     const exe = b.addExecutable(.{
         .name = "binmodify",
@@ -48,6 +59,8 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
         .pic = pic,
     });
+
+    clib_mod.addOptions("config", options);
 
     clib_mod.linkLibrary(capstone_dependency.artifact("capstone"));
 
@@ -71,13 +84,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const test_filters: []const []const u8 = b.option(
-        []const []const u8,
-        "test-filter",
-        "Skip tests that do not match any of the specified filters",
-    ) orelse &.{};
-
-    const all_tests = b.addTest(.{
+    const tests_mod = b.createModule(.{
         .root_source_file = b.path("src/c_root.zig"),
         .target = target,
         .optimize = optimize,
@@ -85,6 +92,12 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
         .link_libc = true,
         .link_libcpp = true,
+    });
+
+    tests_mod.addOptions("config", options);
+
+    const all_tests = b.addTest(.{
+        .root_module = tests_mod,
         .filters = test_filters,
     });
     all_tests.linkLibrary(capstone_dependency.artifact("capstone"));

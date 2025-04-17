@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 
 const arch = @import("arch.zig");
 const ctl_asm = @import("ctl_asm.zig");
+const utils = @import("utils.zig");
 
 pub const PatchInfo: type = extern struct {
     cave_addr: u64,
@@ -129,8 +130,9 @@ comptime {
     const nops = &.{ [_]u8{0x90}, [_]u8{0x90}, [_]u8{ 0x1F, 0x20, 0x03, 0xD5 }, [_]u8{ 0xE1, 0xA0, 0x00, 0x00 } };
     for (optimzes) |optimize| {
         for (targets, qemus, nops) |target, qemu, nop| {
+            if (!utils.should_add_test("elf nop patch no difference " ++ target ++ optimize)) continue;
             _ = struct {
-                test "elf nop patch no difference" {
+                test {
                     const test_src_path = "./tests/hello_world.zig";
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
                     const expected_stderr = "All your codebase are belong to us.\n";
@@ -188,8 +190,9 @@ comptime {
     const nops = &.{ [_]u8{0x90}, [_]u8{0x90} };
     for (optimzes) |optimize| {
         for (targets, nops) |target, nop| {
+            if (!utils.should_add_test("coff nop patch no difference " ++ target ++ optimize)) continue;
             _ = struct {
-                test "coff nop patch no difference" {
+                test {
                     const test_src_path = "./tests/hello_world.zig";
                     const test_with_patch_prefix = "./coff_nop_patch_no_difference";
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
