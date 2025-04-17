@@ -185,11 +185,11 @@ comptime {
 }
 
 comptime {
-    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "Debug" }; // ReleaseSafe seems to be generated without large caves.
+    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "ReleaseSafe", "Debug" }; // ReleaseSafe seems to be generated without large caves.
     const targets = &.{ "x86_64-windows", "x86-windows" };
     const nops = &.{ [_]u8{0x90}, [_]u8{0x90} };
-    for (optimzes) |optimize| {
-        for (targets, nops) |target, nop| {
+    for (optimzes, 0..) |optimize, i| {
+        for (targets, nops, 0..) |target, nop, j| {
             if (!utils.should_add_test("coff nop patch no difference " ++ target ++ optimize)) continue;
             _ = struct {
                 test {
@@ -214,7 +214,7 @@ comptime {
                     {
                         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
                         defer f.close();
-                        const patch = nop ** 0x200;
+                        const patch = nop ** if ((i == 1) and (j == 1)) 0x20 else 0x200;
                         const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
                         defer std.testing.allocator.free(data);
                         try std.testing.expectEqual(f.getEndPos(), try f.read(data));

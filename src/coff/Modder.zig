@@ -43,6 +43,7 @@ const OptionalHeaderFields = std.meta.FieldEnum(std.coff.OptionalHeader);
 
 const PartialHeader = struct {
     file_alignment: u32,
+    section_alignment: u32,
     image_base: u64,
     coff_header_offset: usize,
     size_of_optional_header: u16,
@@ -194,6 +195,11 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
                 std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => parsed_source.coff.getOptionalHeader32().file_alignment,
                 else => unreachable,
             },
+            .section_alignment = switch (optional_header.magic) {
+                std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => parsed_source.coff.getOptionalHeader64().section_alignment,
+                std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => parsed_source.coff.getOptionalHeader32().section_alignment,
+                else => unreachable,
+            },
             .image_base = image_base,
             .coff_header_offset = parsed_source.coff.coff_header_offset,
             .size_of_optional_header = parsed_source.coff.getCoffHeader().size_of_optional_header,
@@ -230,8 +236,10 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
             .is_end = true,
         };
         const addr_idx = range_idx.get(self.ranges).to_addr;
+        // NOTE: Im pretty sure the code for section start expansion works but its not currently tested.
         const prev_sec_mem_bound = (if (@intFromEnum(addr_idx) == 0) 0 else (addr_idx.prev().get(self.addr_to_range).get(self.ranges).addr + addr_idx.prev().get(self.addr_to_range).get(self.ranges).memsz));
-        if (range_idx.get(self.ranges).addr > (wanted_size + prev_sec_mem_bound)) return SecEdge{
+        const section_aligned_size = wanted_size + if (wanted_size % self.header.section_alignment == 0) 0 else self.header.section_alignment - (wanted_size % self.header.section_alignment);
+        if (range_idx.get(self.ranges).addr > (section_aligned_size + prev_sec_mem_bound)) return SecEdge{
             .sec_idx = range_idx,
             .is_end = false,
         };
@@ -352,7 +360,7 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
 
     if (!edge.is_end) {
         try shift.shift_forward(parse_source, edge.sec_idx.get(self.ranges).off, edge.sec_idx.get(self.ranges).off + @min(edge.sec_idx.get(self.ranges).filesz, edge.sec_idx.get(self.ranges).memsz), new_offset + size - edge.sec_idx.get(self.ranges).off);
-        edge.sec_idx.get(self.ranges).addr -= size;
+        edge.sec_idx.get(self.ranges).addr -= size + if (size % self.header.section_alignment == 0) 0 else self.header.section_alignment - (size % self.header.section_alignment);
         try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).addr, .addr, parse_source);
         edge.sec_idx.get(self.ranges).off = new_offset;
         try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).off, .off, parse_source);
@@ -427,10 +435,10 @@ pub fn cave_to_off(self: *const Modder, cave: SecEdge, size: u64) u64 {
 }
 
 comptime {
-    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "Debug" }; // ReleaseSafe seems to be generated without any large caves.
+    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "ReleaseSafe", "Debug" }; // ReleaseSafe seems to be generated without any large caves.
     const targets = &.{ "x86_64-windows", "x86-windows" };
-    for (optimzes) |optimize| {
-        for (targets) |target| {
+    for (optimzes, 0..) |optimize, i| {
+        for (targets, 0..) |target, j| {
             if (!utils.should_add_test("coff create cave same output " ++ target ++ optimize)) continue;
             _ = struct {
                 test {
@@ -455,7 +463,7 @@ comptime {
                         var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
                         defer f.close();
                         var stream = std.io.StreamSource{ .file = f };
-                        const wanted_size = 0x200;
+                        const wanted_size = if ((i == 1) and (j == 1)) 0x20 else 0x200;
                         const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
                         defer std.testing.allocator.free(data);
                         try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
