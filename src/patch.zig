@@ -122,151 +122,125 @@ const ElfParsed = @import("elf/Parsed.zig");
 const CoffModder = @import("coff/Modder.zig");
 const CoffParsed = @import("coff/Parsed.zig");
 
-test "elf nop patch no difference" {
-    const test_src_path = "./tests/hello_world.zig";
-    const test_with_patch_prefix = "./elf_nop_patch_no_difference";
-    const native_compile_path = "./elf_nop_hello_world";
-    const cwd: std.fs.Dir = std.fs.cwd();
+comptime {
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
     const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux", "arm-linux" };
     const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64", "qemu-arm" };
     const nops = &.{ [_]u8{0x90}, [_]u8{0x90}, [_]u8{ 0x1F, 0x20, 0x03, 0xD5 }, [_]u8{ 0xE1, 0xA0, 0x00, 0x00 } };
+    for (optimzes) |optimize| {
+        for (targets, qemus, nops) |target, qemu, nop| {
+            _ = struct {
+                test "elf nop patch no difference" {
+                    const test_src_path = "./tests/hello_world.zig";
+                    const expected_stdout = "Run `zig build test` to run the tests.\n";
+                    const expected_stderr = "All your codebase are belong to us.\n";
+                    const test_with_patch_prefix = "./elf_nop_patch_no_difference";
+                    const cwd: std.fs.Dir = std.fs.cwd();
 
-    {
-        const build_native_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_native_result.stdout);
-        defer std.testing.allocator.free(build_native_result.stderr);
-        try std.testing.expect(build_native_result.term == .Exited);
-    }
-    const no_patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{native_compile_path},
-    });
-    defer std.testing.allocator.free(no_patch_result.stdout);
-    defer std.testing.allocator.free(no_patch_result.stderr);
-    try std.testing.expect(no_patch_result.term == .Exited);
+                    const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
 
-    inline for (optimzes) |optimize| {
-        inline for (targets, qemus, nops) |target, qemu, nop| {
-            const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
+                    {
+                        const build_src_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=elf", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+                        });
+                        defer std.testing.allocator.free(build_src_result.stdout);
+                        defer std.testing.allocator.free(build_src_result.stderr);
+                        try std.testing.expect(build_src_result.term == .Exited);
+                        try std.testing.expect(build_src_result.stderr.len == 0);
+                    }
 
-            {
-                const build_src_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=elf", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
-                });
-                defer std.testing.allocator.free(build_src_result.stdout);
-                defer std.testing.allocator.free(build_src_result.stderr);
-                try std.testing.expect(build_src_result.term == .Exited);
-                try std.testing.expect(build_src_result.stderr.len == 0);
-            }
+                    {
+                        var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
+                        defer f.close();
+                        const patch = nop ** 0x900;
+                        const parsed = try ElfParsed.init(&f);
+                        var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
+                        defer patcher.deinit(std.testing.allocator);
+                        _ = try patcher.pure_patch(parsed.header.entry, &patch, &f);
+                    }
 
-            {
-                var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
-                defer f.close();
-                const patch = nop ** 0x900;
-                const parsed = try ElfParsed.init(&f);
-                var patcher: Patcher(ElfModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
-                defer patcher.deinit(std.testing.allocator);
-                _ = try patcher.pure_patch(parsed.header.entry, &patch, &f);
-            }
-
-            if (builtin.os.tag == .linux) {
-                // check output with a cave
-                const patch_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{ qemu, test_with_patch_path },
-                });
-                defer std.testing.allocator.free(patch_result.stdout);
-                defer std.testing.allocator.free(patch_result.stderr);
-                try std.testing.expect(patch_result.term == .Exited);
-                try std.testing.expect(no_patch_result.term == .Exited);
-                try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
-                try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
-                try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
-            }
+                    if (builtin.os.tag == .linux) {
+                        // check output with a cave
+                        const patch_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{ qemu, test_with_patch_path },
+                        });
+                        defer std.testing.allocator.free(patch_result.stdout);
+                        defer std.testing.allocator.free(patch_result.stderr);
+                        try std.testing.expect(patch_result.term == .Exited);
+                        try std.testing.expectEqual(0, patch_result.term.Exited);
+                        try std.testing.expectEqualStrings(expected_stdout, patch_result.stdout);
+                        try std.testing.expectEqualStrings(expected_stderr, patch_result.stderr);
+                    }
+                    if (builtin.os.tag != .linux) {
+                        return error.SkipZigTest;
+                    }
+                }
+            };
         }
-    }
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
     }
 }
 
-test "coff nop patch no difference" {
-    const test_src_path = "./tests/hello_world.zig";
-    const test_with_patch_prefix = "./coff_nop_patch_no_difference";
-    const native_compile_path = "./coff_nop_hello_world";
-    const cwd: std.fs.Dir = std.fs.cwd();
+comptime {
     const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "Debug" }; // ReleaseSafe seems to be generated without large caves.
     const targets = &.{ "x86_64-windows", "x86-windows" };
     const nops = &.{ [_]u8{0x90}, [_]u8{0x90} };
+    for (optimzes) |optimize| {
+        for (targets, nops) |target, nop| {
+            _ = struct {
+                test "coff nop patch no difference" {
+                    const test_src_path = "./tests/hello_world.zig";
+                    const test_with_patch_prefix = "./coff_nop_patch_no_difference";
+                    const expected_stdout = "Run `zig build test` to run the tests.\n";
+                    const expected_stderr = "All your codebase are belong to us.\n";
+                    const cwd: std.fs.Dir = std.fs.cwd();
 
-    {
-        const build_native_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_native_result.stdout);
-        defer std.testing.allocator.free(build_native_result.stderr);
-        try std.testing.expect(build_native_result.term == .Exited);
-    }
-    const no_patch_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{native_compile_path},
-    });
-    defer std.testing.allocator.free(no_patch_result.stdout);
-    defer std.testing.allocator.free(no_patch_result.stderr);
-    try std.testing.expect(no_patch_result.term == .Exited);
+                    const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize ++ ".exe";
+                    {
+                        const build_src_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
+                        });
+                        defer std.testing.allocator.free(build_src_result.stdout);
+                        defer std.testing.allocator.free(build_src_result.stderr);
+                        try std.testing.expect(build_src_result.term == .Exited);
+                        try std.testing.expect(build_src_result.stderr.len == 0);
+                    }
 
-    inline for (optimzes) |optimize| {
-        inline for (targets, nops) |target, nop| {
-            const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize ++ ".exe";
-            {
-                const build_src_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=coff", "-femit-bin=" ++ test_with_patch_path[2..], test_src_path },
-                });
-                defer std.testing.allocator.free(build_src_result.stdout);
-                defer std.testing.allocator.free(build_src_result.stderr);
-                try std.testing.expect(build_src_result.term == .Exited);
-                try std.testing.expect(build_src_result.stderr.len == 0);
-            }
+                    {
+                        var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
+                        defer f.close();
+                        const patch = nop ** 0x200;
+                        const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
+                        defer std.testing.allocator.free(data);
+                        try std.testing.expectEqual(f.getEndPos(), try f.read(data));
+                        const coff = try std.coff.Coff.init(data, false);
+                        const parsed = CoffParsed.init(coff);
+                        var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
+                        defer patcher.deinit(std.testing.allocator);
+                        _ = try patcher.pure_patch(parsed.coff.getImageBase() + parsed.coff.getOptionalHeader().address_of_entry_point, &patch, &f);
+                    }
 
-            {
-                var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
-                defer f.close();
-                const patch = nop ** 0x200;
-                const data = try std.testing.allocator.alloc(u8, try f.getEndPos());
-                defer std.testing.allocator.free(data);
-                try std.testing.expectEqual(f.getEndPos(), try f.read(data));
-                const coff = try std.coff.Coff.init(data, false);
-                const parsed = CoffParsed.init(coff);
-                var patcher: Patcher(CoffModder, capstone.Disasm) = try .init(std.testing.allocator, &f, &parsed);
-                defer patcher.deinit(std.testing.allocator);
-                _ = try patcher.pure_patch(parsed.coff.getImageBase() + parsed.coff.getOptionalHeader().address_of_entry_point, &patch, &f);
-            }
-
-            if (builtin.os.tag == .windows) {
-                // check output with a cave
-                const patch_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{test_with_patch_path},
-                });
-                defer std.testing.allocator.free(patch_result.stdout);
-                defer std.testing.allocator.free(patch_result.stderr);
-                try std.testing.expect(patch_result.term == .Exited);
-                try std.testing.expect(no_patch_result.term == .Exited);
-                try std.testing.expectEqual(patch_result.term.Exited, no_patch_result.term.Exited);
-                try std.testing.expectEqualStrings(patch_result.stdout, no_patch_result.stdout);
-                try std.testing.expectEqualStrings(patch_result.stderr, no_patch_result.stderr);
-            }
+                    if (builtin.os.tag == .windows) {
+                        // check output with a cave
+                        const patch_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{test_with_patch_path},
+                        });
+                        defer std.testing.allocator.free(patch_result.stdout);
+                        defer std.testing.allocator.free(patch_result.stderr);
+                        try std.testing.expect(patch_result.term == .Exited);
+                        try std.testing.expectEqual(0, patch_result.term.Exited);
+                        try std.testing.expectEqualStrings(expected_stdout, patch_result.stdout);
+                        try std.testing.expectEqualStrings(expected_stderr, patch_result.stderr);
+                    }
+                    if (builtin.os.tag != .windows) {
+                        return error.SkipZigTest;
+                    }
+                }
+            };
         }
-    }
-    if (builtin.os.tag != .windows) {
-        return error.SkipZigTest;
     }
 }
 

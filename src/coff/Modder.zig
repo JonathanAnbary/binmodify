@@ -425,78 +425,64 @@ pub fn cave_to_off(self: *const Modder, cave: SecEdge, size: u64) u64 {
     return cave.sec_idx.get(self.ranges).off + if (cave.is_end) cave.sec_idx.get(self.ranges).filesz - size else 0;
 }
 
-test "create cave same output" {
-    const test_src_path = "./tests/hello_world.zig";
-    const test_with_cave_prefix = "./create_cave_same_output_coff";
-    const native_compile_path = "./coff_cave_hello_world";
-    const cwd: std.fs.Dir = std.fs.cwd();
+comptime {
     const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "Debug" }; // ReleaseSafe seems to be generated without any large caves.
     const targets = &.{ "x86_64-windows", "x86-windows" };
+    for (optimzes) |optimize| {
+        for (targets) |target| {
+            _ = struct {
+                test "coff create cave same output" {
+                    const test_src_path = "./tests/hello_world.zig";
+                    const expected_stdout = "Run `zig build test` to run the tests.\n";
+                    const expected_stderr = "All your codebase are belong to us.\n";
+                    const test_with_cave_prefix = "./create_cave_same_output_coff";
+                    const cwd: std.fs.Dir = std.fs.cwd();
+                    const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize ++ ".exe";
+                    {
+                        const build_src_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=coff", "-femit-bin=" ++ test_with_cave_filename[2..], test_src_path },
+                        });
+                        defer std.testing.allocator.free(build_src_result.stdout);
+                        defer std.testing.allocator.free(build_src_result.stderr);
+                        try std.testing.expect(build_src_result.term == .Exited);
+                        try std.testing.expect(build_src_result.stderr.len == 0);
+                    }
 
-    {
-        const build_native_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_native_result.stdout);
-        defer std.testing.allocator.free(build_native_result.stderr);
-        try std.testing.expect(build_native_result.term == .Exited);
-    }
-    const no_cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{native_compile_path},
-    });
-    defer std.testing.allocator.free(no_cave_result.stdout);
-    defer std.testing.allocator.free(no_cave_result.stderr);
-    try std.testing.expect(no_cave_result.term == .Exited);
+                    {
+                        var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
+                        defer f.close();
+                        var stream = std.io.StreamSource{ .file = f };
+                        const wanted_size = 0x200;
+                        const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
+                        defer std.testing.allocator.free(data);
+                        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
+                        const coff = try std.coff.Coff.init(data, false);
+                        const parsed = Parsed.init(coff);
+                        var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+                        defer coff_modder.deinit(std.testing.allocator);
+                        const option = (try coff_modder.get_cave_option(wanted_size, .{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
+                        try coff_modder.create_cave(wanted_size, option, &stream);
+                    }
 
-    inline for (optimzes) |optimize| {
-        inline for (targets) |target| {
-            const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize ++ ".exe";
-            {
-                const build_src_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=coff", "-femit-bin=" ++ test_with_cave_filename[2..], test_src_path },
-                });
-                defer std.testing.allocator.free(build_src_result.stdout);
-                defer std.testing.allocator.free(build_src_result.stderr);
-                try std.testing.expect(build_src_result.term == .Exited);
-                try std.testing.expect(build_src_result.stderr.len == 0);
-            }
-
-            {
-                var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
-                defer f.close();
-                var stream = std.io.StreamSource{ .file = f };
-                const wanted_size = 0x200;
-                const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
-                defer std.testing.allocator.free(data);
-                try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
-                const coff = try std.coff.Coff.init(data, false);
-                const parsed = Parsed.init(coff);
-                var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
-                defer coff_modder.deinit(std.testing.allocator);
-                const option = (try coff_modder.get_cave_option(wanted_size, .{ .read = true, .execute = true })) orelse return Error.NoCaveOption;
-                try coff_modder.create_cave(wanted_size, option, &stream);
-            }
-
-            if (builtin.os.tag == .windows) {
-                // check output with a cave
-                const cave_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{test_with_cave_filename},
-                });
-                defer std.testing.allocator.free(cave_result.stdout);
-                defer std.testing.allocator.free(cave_result.stderr);
-                try std.testing.expect(cave_result.term == .Exited);
-                try std.testing.expect(no_cave_result.term == .Exited);
-                try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-                try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-                try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
-            }
+                    if (builtin.os.tag == .windows) {
+                        // check output with a cave
+                        const cave_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{test_with_cave_filename},
+                        });
+                        defer std.testing.allocator.free(cave_result.stdout);
+                        defer std.testing.allocator.free(cave_result.stderr);
+                        try std.testing.expect(cave_result.term == .Exited);
+                        try std.testing.expectEqual(0, cave_result.term.Exited);
+                        try std.testing.expectEqualStrings(expected_stdout, cave_result.stdout);
+                        try std.testing.expectEqualStrings(expected_stderr, cave_result.stderr);
+                    }
+                    if (builtin.os.tag != .windows) {
+                        return error.SkipZigTest;
+                    }
+                }
+            };
         }
-    }
-    if (builtin.os.tag != .windows) {
-        return error.SkipZigTest;
     }
 }

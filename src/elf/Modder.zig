@@ -915,75 +915,60 @@ pub fn print_modelf(elf_modder: *const Modder) void {
     }
 }
 
-test "create cave same output" {
-    const test_src_path = "./tests/hello_world.zig";
-    const test_with_cave_prefix = "./create_cave_same_output_elf";
-    const native_compile_path = "./elf_cave_hello_world";
-    const cwd: std.fs.Dir = std.fs.cwd();
+comptime {
     const optimzes = &.{ "ReleaseSmall", "ReleaseSafe", "ReleaseFast", "Debug" };
     const targets = &.{ "x86_64-linux", "x86-linux", "aarch64-linux", "arm-linux" };
     const qemus = &.{ "qemu-x86_64", "qemu-i386", "qemu-aarch64", "qemu-arm" };
-    {
-        const build_native_result = try std.process.Child.run(.{
-            .allocator = std.testing.allocator,
-            .argv = &[_][]const u8{ "zig", "build-exe", "-femit-bin=" ++ native_compile_path[2..], test_src_path },
-        });
-        defer std.testing.allocator.free(build_native_result.stdout);
-        defer std.testing.allocator.free(build_native_result.stderr);
-        try std.testing.expect(build_native_result.term == .Exited);
-    }
-    const no_cave_result = try std.process.Child.run(.{
-        .allocator = std.testing.allocator,
-        .argv = &[_][]const u8{native_compile_path},
-    });
-    defer std.testing.allocator.free(no_cave_result.stdout);
-    defer std.testing.allocator.free(no_cave_result.stderr);
-    try std.testing.expect(no_cave_result.term == .Exited);
+    for (optimzes) |optimize| {
+        for (targets, qemus) |target, qemu| {
+            _ = struct {
+                test "elf create cave same output" {
+                    const test_src_path = "./tests/hello_world.zig";
+                    const expected_stdout = "Run `zig build test` to run the tests.\n";
+                    const expected_stderr = "All your codebase are belong to us.\n";
+                    const test_with_cave_prefix = "./create_cave_same_output_elf";
+                    const cwd: std.fs.Dir = std.fs.cwd();
+                    const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize;
+                    {
+                        const build_src_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=elf", "-femit-bin=" ++ test_with_cave_filename[2..], test_src_path },
+                        });
+                        defer std.testing.allocator.free(build_src_result.stdout);
+                        defer std.testing.allocator.free(build_src_result.stderr);
+                        try std.testing.expect(build_src_result.term == .Exited);
+                        try std.testing.expect(build_src_result.stderr.len == 0);
+                    }
 
-    inline for (optimzes) |optimize| {
-        inline for (targets, qemus) |target, qemu| {
-            const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize;
-            {
-                const build_src_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{ "zig", "build-exe", "-target", target, "-O", optimize, "-ofmt=elf", "-femit-bin=" ++ test_with_cave_filename[2..], test_src_path },
-                });
-                defer std.testing.allocator.free(build_src_result.stdout);
-                defer std.testing.allocator.free(build_src_result.stderr);
-                try std.testing.expect(build_src_result.term == .Exited);
-                try std.testing.expect(build_src_result.stderr.len == 0);
-            }
+                    {
+                        var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
+                        defer f.close();
+                        const wanted_size = 0xfff;
+                        const parsed = try Parsed.init(&f);
+                        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &f);
+                        defer elf_modder.deinit(std.testing.allocator);
+                        const option = (try elf_modder.get_cave_option(wanted_size, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
+                        try elf_modder.create_cave(wanted_size, option, &f);
+                    }
 
-            {
-                var f = try cwd.openFile(test_with_cave_filename, .{ .mode = .read_write });
-                defer f.close();
-                const wanted_size = 0xfff;
-                const parsed = try Parsed.init(&f);
-                var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &f);
-                defer elf_modder.deinit(std.testing.allocator);
-                const option = (try elf_modder.get_cave_option(wanted_size, .{ .execute = true, .read = true })) orelse return error.NoCaveOption;
-                try elf_modder.create_cave(wanted_size, option, &f);
-            }
-
-            if (builtin.os.tag == .linux) {
-                // check output with a cave
-                const cave_result = try std.process.Child.run(.{
-                    .allocator = std.testing.allocator,
-                    .argv = &[_][]const u8{ qemu, test_with_cave_filename },
-                });
-                defer std.testing.allocator.free(cave_result.stdout);
-                defer std.testing.allocator.free(cave_result.stderr);
-                try std.testing.expect(cave_result.term == .Exited);
-                try std.testing.expect(no_cave_result.term == .Exited);
-                try std.testing.expectEqual(cave_result.term.Exited, no_cave_result.term.Exited);
-                try std.testing.expectEqualStrings(cave_result.stdout, no_cave_result.stdout);
-                try std.testing.expectEqualStrings(cave_result.stderr, no_cave_result.stderr);
-            }
+                    if (builtin.os.tag == .linux) {
+                        // check output with a cave
+                        const cave_result = try std.process.Child.run(.{
+                            .allocator = std.testing.allocator,
+                            .argv = &[_][]const u8{ qemu, test_with_cave_filename },
+                        });
+                        defer std.testing.allocator.free(cave_result.stdout);
+                        defer std.testing.allocator.free(cave_result.stderr);
+                        try std.testing.expect(cave_result.term == .Exited);
+                        try std.testing.expectEqual(0, cave_result.term.Exited);
+                        try std.testing.expectEqualStrings(expected_stdout, cave_result.stdout);
+                        try std.testing.expectEqualStrings(expected_stderr, cave_result.stderr);
+                    } else {
+                        return error.SkipZigTest;
+                    }
+                }
+            };
         }
-    }
-
-    if (builtin.os.tag != .linux) {
-        return error.SkipZigTest;
     }
 }
 
