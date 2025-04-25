@@ -4,8 +4,9 @@ const builtin = @import("builtin");
 const native_endian = builtin.target.cpu.arch.endian();
 
 const utils = @import("../utils.zig");
-const shift = @import("../shift.zig");
-const FileRangeFlags = @import("../file_range_flags.zig").FileRangeFlags;
+const shift_forward = utils.shift_forward;
+const ShiftError = utils.ShiftError;
+const FileRangeFlags = utils.FileRangeFlags;
 
 const Parsed = @import("Parsed.zig");
 
@@ -28,7 +29,7 @@ pub const Error = error{
     VirtualSizeLessThenFileSize,
     FieldNotAdjustable,
     TooManyFileRanges,
-} || shift.Error || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError || std.coff.CoffError || std.mem.Allocator.Error;
+} || ShiftError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError || std.coff.CoffError || std.mem.Allocator.Error;
 
 pub const SecEdge: type = struct {
     sec_idx: RangeIndex,
@@ -333,13 +334,13 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
     while (off_idx != first_adjust_off_idx) {
         off_idx = off_idx.prev();
         const range_idx = off_idx.get(self.off_to_range).*;
-        try shift.shift_forward(parse_source, range_idx.get(self.ranges).off, range_idx.get(self.ranges).off + @min(range_idx.get(self.ranges).filesz, range_idx.get(self.ranges).memsz), range_idx.get(self.ranges).adjust);
+        try shift_forward(parse_source, range_idx.get(self.ranges).off, range_idx.get(self.ranges).off + @min(range_idx.get(self.ranges).filesz, range_idx.get(self.ranges).memsz), range_idx.get(self.ranges).adjust);
         range_idx.get(self.ranges).off += range_idx.get(self.ranges).adjust;
         try self.set_filerange_field(range_idx, range_idx.get(self.ranges).off, .off, parse_source);
     }
 
     if (!edge.is_end) {
-        try shift.shift_forward(parse_source, edge.sec_idx.get(self.ranges).off, edge.sec_idx.get(self.ranges).off + @min(edge.sec_idx.get(self.ranges).filesz, edge.sec_idx.get(self.ranges).memsz), new_offset + size - edge.sec_idx.get(self.ranges).off);
+        try shift_forward(parse_source, edge.sec_idx.get(self.ranges).off, edge.sec_idx.get(self.ranges).off + @min(edge.sec_idx.get(self.ranges).filesz, edge.sec_idx.get(self.ranges).memsz), new_offset + size - edge.sec_idx.get(self.ranges).off);
         edge.sec_idx.get(self.ranges).addr -= size + if (size % self.header.section_alignment == 0) 0 else self.header.section_alignment - (size % self.header.section_alignment);
         try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).addr, .addr, parse_source);
         edge.sec_idx.get(self.ranges).off = new_offset;

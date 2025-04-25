@@ -103,6 +103,7 @@ pub fn build(b: *std.Build) void {
     all_tests.linkLibrary(capstone_dependency.artifact("capstone"));
     all_tests.addObjectFile(b.path("keystone/build/llvm/lib64/libkeystone.a"));
     all_tests.addIncludePath(b.path("keystone/include/keystone/"));
+    b.installArtifact(all_tests);
 
     const run_unit_tests = b.addRunArtifact(all_tests);
 

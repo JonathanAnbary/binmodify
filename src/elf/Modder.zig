@@ -6,10 +6,10 @@ const elf = std.elf;
 
 const builtin = @import("builtin");
 const native_endian = builtin.target.cpu.arch.endian();
-const utils = @import("../utils.zig");
 
-const shift = @import("../shift.zig");
-const FileRangeFlags = @import("../file_range_flags.zig").FileRangeFlags;
+const utils = @import("../utils.zig");
+const stream_shift_forward = utils.shift_forward;
+const FileRangeFlags = utils.FileRangeFlags;
 const Parsed = @import("Parsed.zig");
 
 const p_flags_type = std.meta.fieldInfo(elf.Elf64_Phdr, @field(Phdr64Fields, "p_flags")).type;
@@ -241,8 +241,8 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     const load_to_addr = try gpa.alloc(AddrIndex, load_count);
     var load_index: LoadIndex = @enumFromInt(0);
     errdefer gpa.free(load_to_addr);
-    for (addrs_info[parsed.header.shnum + 1 ..], parsed.header.shnum + 1.., 0..) |addr_info, j, h| {
-        if (load_map[h]) {
+    for (addrs_info, 0..) |addr_info, j| {
+        if ((@intFromEnum(addr_info.to_range) > parsed.header.shnum) and (load_map[@intFromEnum(addr_info.to_range) - parsed.header.shnum - 1])) {
             if ((@intFromEnum(load_index) != 0) and (addr_info.to_range.get(ranges.ptr).addr < (load_index.prev().get(load_to_addr.ptr).get(addrs_info.ptr).to_range.get(ranges.ptr).addr + load_index.prev().get(load_to_addr.ptr).get(addrs_info.ptr).to_range.get(ranges.ptr).memsz))) {
                 return Error.OverlappingMemoryRanges;
             }
@@ -443,13 +443,12 @@ fn shift_forward(self: *Modder, size: u64, start_top_idx: TopIndex, file: anytyp
         self.adjustments[adjust_idx] = needed_size;
     }
     var top_index = top_idx;
-    while (@intFromEnum(top_index) > @intFromEnum(start_top_idx)) : ({
+    while (@intFromEnum(top_index) > @intFromEnum(start_top_idx)) {
         top_index = top_index.prev();
         adjust_idx -= 1;
-    }) {
         const top_off_idx = top_index.get(self.top_to_off);
         const top_range_idx = top_off_idx.get(self.off_to_range);
-        try shift.shift_forward(file, top_range_idx.get(self.ranges).off, top_range_idx.get(self.ranges).off + top_range_idx.get(self.ranges).filesz, self.adjustments[adjust_idx]);
+        try stream_shift_forward(file, top_range_idx.get(self.ranges).off, top_range_idx.get(self.ranges).off + top_range_idx.get(self.ranges).filesz, self.adjustments[adjust_idx]);
         const final_off_idx = if (@intFromEnum(top_index.next()) == self.tops_len) self.ranges_len else @intFromEnum(top_index.next().get(self.top_to_off).*);
         for (@intFromEnum(top_off_idx.*)..final_off_idx) |off_idx| {
             const index = self.off_to_range[off_idx];
@@ -520,7 +519,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) !void
         // if (shoff_top_idx == edge.top_idx) {
         //     try self.set_ehdr_field(self.header.shoff + new_offset + size - old_offset, "shoff", file);
         // }
-        try shift.shift_forward(file, old_offset, old_offset + idx.get(self.ranges).filesz, first_adjust);
+        try stream_shift_forward(file, old_offset, old_offset + idx.get(self.ranges).filesz, first_adjust);
 
         idx.get(self.ranges).off = new_offset;
         try self.set_filerange_field(idx.*, idx.get(self.ranges).off, .off, file);
@@ -610,23 +609,23 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     if ((top_range_idx.get(self.ranges).alignment != 0) and ((needed_size % top_range_idx.get(self.ranges).alignment) != 0)) {
         needed_size += top_range_idx.get(self.ranges).alignment - (needed_size % top_range_idx.get(self.ranges).alignment);
     }
-    const final_off_idx = blk: {
-        if ((phdr_top_idx + 1) == self.tops_len) {
-            break :blk self.ranges_len;
+    const final_off_idx: OffIndex = blk: {
+        if (@intFromEnum(phdr_top_idx.next()) == self.tops_len) {
+            break :blk @enumFromInt(self.ranges_len);
         } else {
             const post_off_idx = phdr_top_idx.next().get(self.top_to_off);
-            break :blk post_off_idx;
+            break :blk post_off_idx.*;
         }
     };
 
-    const phdr_off_idx = std.sort.lowerBound(
+    const phdr_off_idx: OffIndex = @enumFromInt(std.sort.lowerBound(
         RangeIndex,
-        self.off_to_range[top_off_idx..final_off_idx],
+        self.off_to_range[@intFromEnum(top_off_idx.*)..@intFromEnum(final_off_idx)],
         CompareContext{ .self = self, .lhs = self.header.phoff + 1 },
         off_compareFn,
-    ) - 1 + top_off_idx;
+    ) - 1 + @intFromEnum(top_off_idx.*));
     const phdr_range_idx = phdr_off_idx.get(self.off_to_range);
-    const phdr_addr_idx = self.ranges[phdr_range_idx].to_addr;
+    const phdr_addr_idx = phdr_range_idx.get(self.ranges).to_addr;
     const phdr_load_idx = phdr_addr_idx.get(self.addrs_info).to_load;
     const phdr_is_contained = ((top_range_idx.get(self.ranges).addr + top_range_idx.get(self.ranges).memsz) != (phdr_range_idx.get(self.ranges).addr + phdr_range_idx.get(self.ranges).memsz));
     const have_forward_space = (top_range_idx.get(self.ranges).addr + top_range_idx.get(self.ranges).memsz + needed_size) < phdr_load_idx.next().get(self.load_to_addr.ptr).get(self.addrs_info).to_range.get(self.ranges).addr;
@@ -636,34 +635,35 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     if ((phdr_range_idx.get(self.ranges).off + phdr_range_idx.get(self.ranges).filesz) != (self.header.phoff + self.header.phentsize * self.header.phnum)) {
         return Error.PhdrTablePhdrNotFound;
     }
-    try self.shift_forward(needed_size, phdr_top_idx + 1, file);
-    try shift.shift_forward(
+    try self.shift_forward(needed_size, phdr_top_idx.next(), file);
+    try stream_shift_forward(
         file,
         self.header.phoff + self.header.phentsize * self.header.phnum,
         top_range_idx.get(self.ranges).off + top_range_idx.get(self.ranges).filesz,
         needed_size,
     );
     top_range_idx.get(self.ranges).filesz += needed_size;
-    try self.set_filerange_field(top_range_idx, top_range_idx.get(self.ranges).filesz, .filesz, file);
+    try self.set_filerange_field(top_range_idx.*, top_range_idx.get(self.ranges).filesz, .filesz, file);
     top_range_idx.get(self.ranges).memsz += needed_size;
-    try self.set_filerange_field(top_range_idx, top_range_idx.get(self.ranges).memsz, .memsz, file);
+    try self.set_filerange_field(top_range_idx.*, top_range_idx.get(self.ranges).memsz, .memsz, file);
 
     phdr_range_idx.get(self.ranges).filesz += self.header.phentsize;
-    try self.set_filerange_field(phdr_range_idx, phdr_range_idx.get(self.ranges).filesz, .filesz, file);
+    try self.set_filerange_field(phdr_range_idx.*, phdr_range_idx.get(self.ranges).filesz, .filesz, file);
     phdr_range_idx.get(self.ranges).memsz += self.header.phentsize;
-    try self.set_filerange_field(phdr_range_idx, phdr_range_idx.get(self.ranges).memsz, .memsz, file);
+    try self.set_filerange_field(phdr_range_idx.*, phdr_range_idx.get(self.ranges).memsz, .memsz, file);
 
-    for (phdr_off_idx + 1..final_off_idx) |off_idx| {
-        const index = off_idx.get(self.off_to_range);
+    for (@intFromEnum(phdr_off_idx.next())..@intFromEnum(final_off_idx)) |off_idx| {
+        const off_index: OffIndex = @enumFromInt(off_idx);
+        const index = off_index.get(self.off_to_range);
         index.get(self.ranges).off += needed_size;
-        try self.set_filerange_field(index, index.get(self.ranges).off, .off, file);
+        try self.set_filerange_field(index.*, index.get(self.ranges).off, .off, file);
     }
 
     if (!have_forward_space) {
         top_range_idx.get(self.ranges).addr -= needed_size;
-        try self.set_filerange_field(top_range_idx, top_range_idx.get(self.ranges).addr, .addr, file);
+        try self.set_filerange_field(top_range_idx.*, top_range_idx.get(self.ranges).addr, .addr, file);
         phdr_range_idx.get(self.ranges).addr -= needed_size; // self.header.phentsize;
-        try self.set_filerange_field(phdr_range_idx, phdr_range_idx.get(self.ranges).addr, .addr, file);
+        try self.set_filerange_field(phdr_range_idx.*, phdr_range_idx.get(self.ranges).addr, .addr, file);
     }
 
     const last_off_range_idx = self.top_to_off[self.tops_len - 1].get(self.off_to_range);
@@ -691,7 +691,7 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     try file.writer().writeByteNTimes(0, size);
     // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
     self.off_to_range = (try gpa.realloc(self.off_to_range[0..self.ranges_len], self.ranges_len + 1)).ptr;
-    self.off_to_range[self.ranges_len] = @intCast(self.ranges_len);
+    self.off_to_range[self.ranges_len] = @enumFromInt(self.ranges_len);
     self.addrs_info = (try gpa.realloc(self.addrs_info[0..self.ranges_len], self.ranges_len + 1)).ptr;
     self.addrs_info[self.ranges_len] = .{
         .to_range = @enumFromInt(self.ranges_len),
@@ -699,10 +699,10 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     };
     self.adjustments = (try gpa.realloc(self.adjustments[0..self.tops_len], self.tops_len + 1)).ptr;
     self.top_to_off = (try gpa.realloc(self.top_to_off[0..self.tops_len], self.tops_len + 1)).ptr;
-    self.top_to_off[self.tops_len] = @intCast(self.ranges_len);
+    self.top_to_off[self.tops_len] = @enumFromInt(self.ranges_len);
     self.tops_len += 1;
     self.load_to_addr = try gpa.realloc(self.load_to_addr, self.load_to_addr.len + 1);
-    self.load_to_addr[self.load_to_addr.len - 1] = @intCast(self.ranges_len);
+    self.load_to_addr[self.load_to_addr.len - 1] = @enumFromInt(self.ranges_len);
     self.ranges = (try gpa.realloc(self.ranges[0..self.ranges_len], self.ranges_len + 1)).ptr;
     self.ranges[self.ranges_len] = .{
         .addr = max_addr + alignment_addend,
@@ -745,7 +745,7 @@ fn top_off_compareFn(context: CompareContext, rhs: OffIndex) std.math.Order {
 }
 
 fn off_compareFn(context: CompareContext, rhs: RangeIndex) std.math.Order {
-    return std.math.order(context.lhs, context.self.ranges[rhs].off);
+    return std.math.order(context.lhs, rhs.get(context.self.ranges).off);
 }
 
 pub fn off_to_addr(self: *const Modder, off: u64) !u64 {
