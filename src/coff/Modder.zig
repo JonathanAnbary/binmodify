@@ -146,7 +146,6 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
             .adjust = undefined,
         };
     }
-    std.debug.print("\n\nnumber_of_sections = {}\n", .{coff_header.number_of_sections});
     const addr_to_range = try gpa.alloc(RangeIndex, ranges_count);
     errdefer gpa.free(addr_to_range);
     const off_to_range = try gpa.alloc(RangeIndex, ranges_count);
@@ -476,12 +475,8 @@ fn set_new_shdr(self: *const Modder, size: u32, flags: FileRangeFlags, off: u32,
 
 pub fn create_section(self: *Modder, gpa: std.mem.Allocator, size: u32, flags: FileRangeFlags, file: anytype) !void {
     const needed_size: u64 = @sizeOf(std.coff.SectionHeader);
-    std.debug.print("\n\nself.ranges[0].memsz = {}\n", .{self.ranges[0].memsz});
-    std.debug.print("\n\nself.ranges[0].filesz = {}\n", .{self.ranges[0].filesz});
     if ((self.ranges[0].to_addr.next().get(self.addr_to_range).get(self.ranges).addr - self.ranges[0].memsz) < needed_size) return Error.NoSpaceLeft;
     try self.create_cave(needed_size, .{ .is_end = true, .sec_idx = @enumFromInt(0) }, file);
-    std.debug.print("\n\nself.ranges[0].memsz = {}\n", .{self.ranges[0].memsz});
-    std.debug.print("\n\nself.ranges[0].filesz = {}\n", .{self.ranges[0].filesz});
 
     // TODO: consider if the created section should go at the end, but before the overlay (kind of sus in general with having the overlay).
     const last_off_range_idx = self.off_to_range[self.len - 1];
