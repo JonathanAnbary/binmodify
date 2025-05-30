@@ -106,3 +106,7 @@ test "test shift stream" {
     try shift_forward(&stream2, start2, end2, shift2);
     try std.testing.expectEqualStrings(&expected2, &buf2);
 }
+
+pub fn align_ceil(T: type, num: T, alignm: T) T {
+    return if ((num % alignm) != 0) num - (num % alignm) + alignm else num;
+}

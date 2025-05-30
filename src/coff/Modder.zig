@@ -7,6 +7,7 @@ const utils = @import("../utils.zig");
 const shift_forward = utils.shift_forward;
 const ShiftError = utils.ShiftError;
 const FileRangeFlags = utils.FileRangeFlags;
+const align_ceil = utils.align_ceil;
 
 const Parsed = @import("Parsed.zig");
 
@@ -29,6 +30,7 @@ pub const Error = error{
     VirtualSizeLessThenFileSize,
     FieldNotAdjustable,
     TooManyFileRanges,
+    UnmappedRange,
 } || ShiftError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError || std.coff.CoffError || std.mem.Allocator.Error;
 
 pub const SecEdge: type = struct {
@@ -40,15 +42,21 @@ pub const EdgeType = SecEdge;
 
 const SectionHeaderFields = std.meta.FieldEnum(std.coff.SectionHeader);
 const CoffHeaderFields = std.meta.FieldEnum(std.coff.CoffHeader);
-const OptionalHeaderFields = std.meta.FieldEnum(std.coff.OptionalHeader);
+
+const Bitness = enum {
+    @"32",
+    @"64",
+};
 
 const PartialHeader = struct {
+    bitness: Bitness,
     file_alignment: u32,
     section_alignment: u32,
     image_base: u64,
     coff_header_offset: usize,
     size_of_optional_header: u16,
     size_of_code: u32,
+    size_of_image: u32,
     size_of_initialized_data: u32,
     size_of_uninitialized_data: u32,
 };
@@ -92,10 +100,14 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     const coff_header = parsed_source.coff.getCoffHeader();
     const optional_header = parsed_source.coff.getOptionalHeader();
     const image_base = parsed_source.coff.getImageBase();
-    const size_of_headers = switch (optional_header.magic) {
-        std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => parsed_source.coff.getOptionalHeader32().size_of_headers,
-        std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => parsed_source.coff.getOptionalHeader64().size_of_headers,
+    const bitness: Bitness = switch (optional_header.magic) {
+        std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => .@"32",
+        std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => .@"64",
         else => unreachable, // We assume we have validated the header already
+    };
+    const size_of_headers = switch (bitness) {
+        .@"32" => parsed_source.coff.getOptionalHeader32().size_of_headers,
+        .@"64" => parsed_source.coff.getOptionalHeader64().size_of_headers,
     };
     if (coff_header.number_of_sections > std.math.maxInt(u16) - 2) return Error.TooManyFileRanges;
     // + 2 for PE header, and overlay.
@@ -105,7 +117,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     ranges[0] = .{
         .addr = 0,
         .filesz = size_of_headers,
-        .memsz = size_of_headers,
+        .memsz = @sizeOf(std.coff.CoffHeader) + coff_header.size_of_optional_header + @sizeOf(std.coff.SectionHeader) * coff_header.number_of_sections,
         .flags = .{},
         .section_flags = .{},
         .off = 0,
@@ -134,6 +146,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
             .adjust = undefined,
         };
     }
+    std.debug.print("\n\nnumber_of_sections = {}\n", .{coff_header.number_of_sections});
     const addr_to_range = try gpa.alloc(RangeIndex, ranges_count);
     errdefer gpa.free(addr_to_range);
     const off_to_range = try gpa.alloc(RangeIndex, ranges_count);
@@ -171,15 +184,18 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
 
     return Modder{
         .header = .{
-            .file_alignment = switch (optional_header.magic) {
-                std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => parsed_source.coff.getOptionalHeader64().file_alignment,
-                std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => parsed_source.coff.getOptionalHeader32().file_alignment,
-                else => unreachable,
+            .bitness = bitness,
+            .file_alignment = switch (bitness) {
+                .@"64" => parsed_source.coff.getOptionalHeader64().file_alignment,
+                .@"32" => parsed_source.coff.getOptionalHeader32().file_alignment,
             },
-            .section_alignment = switch (optional_header.magic) {
-                std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => parsed_source.coff.getOptionalHeader64().section_alignment,
-                std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => parsed_source.coff.getOptionalHeader32().section_alignment,
-                else => unreachable,
+            .section_alignment = switch (bitness) {
+                .@"64" => parsed_source.coff.getOptionalHeader64().section_alignment,
+                .@"32" => parsed_source.coff.getOptionalHeader32().section_alignment,
+            },
+            .size_of_image = switch (bitness) {
+                .@"64" => parsed_source.coff.getOptionalHeader64().size_of_image,
+                .@"32" => parsed_source.coff.getOptionalHeader32().size_of_image,
             },
             .image_base = image_base,
             .coff_header_offset = parsed_source.coff.coff_header_offset,
@@ -219,7 +235,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
         const addr_idx = range_idx.get(self.ranges).to_addr;
         // NOTE: Im pretty sure the code for section start expansion works but its not currently tested.
         const prev_sec_mem_bound = (if (@intFromEnum(addr_idx) == 0) 0 else (addr_idx.prev().get(self.addr_to_range).get(self.ranges).addr + addr_idx.prev().get(self.addr_to_range).get(self.ranges).memsz));
-        const section_aligned_size = wanted_size + if (wanted_size % self.header.section_alignment == 0) 0 else self.header.section_alignment - (wanted_size % self.header.section_alignment);
+        const section_aligned_size = align_ceil(u64, wanted_size, self.header.section_alignment);
         if (range_idx.get(self.ranges).addr > (section_aligned_size + prev_sec_mem_bound)) return SecEdge{
             .sec_idx = range_idx,
             .is_end = false,
@@ -231,7 +247,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
 fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u64) Error!u64 {
     // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
     // and for the case of a start edge whith enough space from the previous segment offset.
-    const aligned_size = if ((size % self.header.file_alignment) != 0) size + self.header.file_alignment - (size % self.header.file_alignment) else size;
+    const aligned_size = align_ceil(u64, size, self.header.file_alignment);
     const prev_off_end = blk: {
         const off_idx = index.get(self.ranges).to_off;
         if (@intFromEnum(off_idx) > 0) {
@@ -257,12 +273,21 @@ fn set_image_file_header_field(self: *const Modder, val: u64, comptime field_nam
 }
 
 fn set_image_optional_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
-    const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + @offsetOf(std.coff.OptionalHeader, field_name);
-    try parse_source.seekTo(offset);
-    const T = std.meta.fieldInfo(std.coff.OptionalHeader, @field(OptionalHeaderFields, field_name)).type;
-    const temp: T = @intCast(val);
-    const temp2 = std.mem.toBytes(temp);
-    if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+    if (self.header.bitness == .@"32") {
+        const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + @offsetOf(std.coff.OptionalHeaderPE32, field_name);
+        try parse_source.seekTo(offset);
+        const T = std.meta.fieldInfo(std.coff.OptionalHeaderPE32, @field(std.meta.FieldEnum(std.coff.OptionalHeaderPE32), field_name)).type;
+        const temp: T = @intCast(val);
+        const temp2 = std.mem.toBytes(temp);
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+    } else {
+        const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + @offsetOf(std.coff.OptionalHeaderPE64, field_name);
+        try parse_source.seekTo(offset);
+        const T = std.meta.fieldInfo(std.coff.OptionalHeaderPE64, @field(std.meta.FieldEnum(std.coff.OptionalHeaderPE64), field_name)).type;
+        const temp: T = @intCast(val);
+        const temp2 = std.mem.toBytes(temp);
+        if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
+    }
 }
 
 // NOTE: field changes must NOT change the memory order or offset order!
@@ -281,7 +306,15 @@ fn set_sechdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime f
 
 fn set_filerange_field(self: *const Modder, index: RangeIndex, val: u64, comptime field: std.meta.FieldEnum(FileRange), file: anytype) !void {
     switch (self.range_type(index)) {
-        .Headers => return Error.FieldNotAdjustable,
+        .Headers => {
+            switch (field) {
+                .filesz => try self.set_image_optional_header_field(val, "size_of_headers", file),
+                .memsz => {
+                    try self.set_image_file_header_field(@divExact(val - @sizeOf(std.coff.CoffHeader) - self.header.size_of_optional_header, @sizeOf(std.coff.SectionHeader)), "number_of_sections", file);
+                },
+                else => return Error.FieldNotAdjustable,
+            }
+        },
         .Section => {
             const fieldname = switch (field) {
                 .off => "pointer_to_raw_data",
@@ -316,7 +349,7 @@ fn range_type(self: *const Modder, index: RangeIndex) RangeType {
 pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytype) Error!void {
     const offset = edge.sec_idx.get(self.ranges).off;
     const new_offset: u64 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
-    var needed_size = size + new_offset - offset;
+    var needed_size: u32 = @intCast(size + new_offset - offset);
 
     const first_adjust_off_idx = edge.sec_idx.get(self.ranges).to_off.next();
     var off_idx = first_adjust_off_idx;
@@ -324,10 +357,10 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
         const sec_idx = off_idx.get(self.off_to_range);
         const prev_off_sec_idx = off_idx.prev().get(self.off_to_range);
         // TODO: should consider calculating the padding and treating it as overwritable.
-        const existing_gap = sec_idx.get(self.ranges).off - (prev_off_sec_idx.get(self.ranges).off + @min(prev_off_sec_idx.get(self.ranges).filesz, prev_off_sec_idx.get(self.ranges).memsz));
+        const existing_gap: u32 = @intCast(sec_idx.get(self.ranges).off - (prev_off_sec_idx.get(self.ranges).off + @min(prev_off_sec_idx.get(self.ranges).filesz, prev_off_sec_idx.get(self.ranges).memsz)));
         if (needed_size < existing_gap) break;
         needed_size -= existing_gap;
-        if ((needed_size % self.header.file_alignment) != 0) needed_size += self.header.file_alignment - (needed_size % self.header.file_alignment);
+        needed_size = align_ceil(u32, needed_size, self.header.file_alignment);
         off_idx.get(self.off_to_range).get(self.ranges).adjust = needed_size;
     }
     off_idx = off_idx;
@@ -341,7 +374,7 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
 
     if (!edge.is_end) {
         try shift_forward(parse_source, edge.sec_idx.get(self.ranges).off, edge.sec_idx.get(self.ranges).off + @min(edge.sec_idx.get(self.ranges).filesz, edge.sec_idx.get(self.ranges).memsz), new_offset + size - edge.sec_idx.get(self.ranges).off);
-        edge.sec_idx.get(self.ranges).addr -= size + if (size % self.header.section_alignment == 0) 0 else self.header.section_alignment - (size % self.header.section_alignment);
+        edge.sec_idx.get(self.ranges).addr -= align_ceil(u64, size, self.header.section_alignment);
         try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).addr, .addr, parse_source);
         edge.sec_idx.get(self.ranges).off = new_offset;
         try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).off, .off, parse_source);
@@ -349,7 +382,7 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
     const filesz_adjust: u32 = blk: {
         if ((edge.sec_idx.get(self.ranges).filesz - edge.sec_idx.get(self.ranges).memsz) < size) {
             const needed_filsz: u32 = @intCast(size - (edge.sec_idx.get(self.ranges).filesz - edge.sec_idx.get(self.ranges).memsz));
-            const res = needed_filsz + if (needed_filsz % self.header.file_alignment != 0) self.header.file_alignment - (needed_filsz % self.header.file_alignment) else 0;
+            const res = align_ceil(u32, needed_filsz, self.header.file_alignment);
             edge.sec_idx.get(self.ranges).filesz += res;
             try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).filesz, .filesz, parse_source);
             break :blk res;
@@ -415,6 +448,83 @@ pub fn cave_to_off(self: *const Modder, cave: SecEdge, size: u64) u64 {
     return cave.sec_idx.get(self.ranges).off + if (cave.is_end) cave.sec_idx.get(self.ranges).filesz - size else 0;
 }
 
+fn set_new_shdr(self: *const Modder, size: u32, flags: FileRangeFlags, off: u32, addr: u32, file: anytype) !void {
+    const new_shdr: std.coff.SectionHeader = .{
+        .name = .{ '.', 'p', 'a', 't', 'c', 'h', 0, 0 },
+        .virtual_size = size,
+        .virtual_address = addr,
+        .size_of_raw_data = align_ceil(u32, size, self.header.file_alignment),
+        .pointer_to_raw_data = off,
+        .pointer_to_relocations = 0,
+        .pointer_to_linenumbers = 0,
+        .number_of_relocations = 0,
+        .number_of_linenumbers = 0,
+        .flags = .{
+            .CNT_CODE = if (flags.execute) 1 else 0,
+            .MEM_EXECUTE = if (flags.execute) 1 else 0,
+            .MEM_READ = if (flags.read) 1 else 0,
+            .MEM_WRITE = if (flags.write) 1 else 0,
+        },
+    };
+    // TODO: figure this out
+    // if (self.header.endian != native_endian) {
+    //     std.mem.byteSwapAllFields(std.coff.SectionHeader, &new_shdr);
+    // }
+    const temp = std.mem.toBytes(new_shdr);
+    if (try file.write(&temp) != @sizeOf(std.coff.SectionHeader)) return Error.UnexpectedEof;
+}
+
+pub fn create_section(self: *Modder, gpa: std.mem.Allocator, size: u32, flags: FileRangeFlags, file: anytype) !void {
+    const needed_size: u64 = @sizeOf(std.coff.SectionHeader);
+    std.debug.print("\n\nself.ranges[0].memsz = {}\n", .{self.ranges[0].memsz});
+    std.debug.print("\n\nself.ranges[0].filesz = {}\n", .{self.ranges[0].filesz});
+    if ((self.ranges[0].to_addr.next().get(self.addr_to_range).get(self.ranges).addr - self.ranges[0].memsz) < needed_size) return Error.NoSpaceLeft;
+    try self.create_cave(needed_size, .{ .is_end = true, .sec_idx = @enumFromInt(0) }, file);
+    std.debug.print("\n\nself.ranges[0].memsz = {}\n", .{self.ranges[0].memsz});
+    std.debug.print("\n\nself.ranges[0].filesz = {}\n", .{self.ranges[0].filesz});
+
+    // TODO: consider if the created section should go at the end, but before the overlay (kind of sus in general with having the overlay).
+    const last_off_range_idx = self.off_to_range[self.len - 1];
+    const max_off = last_off_range_idx.get(self.ranges).off + last_off_range_idx.get(self.ranges).filesz;
+    if (max_off != utils.align_ceil(u64, try file.getEndPos(), self.header.file_alignment)) return Error.UnmappedRange;
+    const last_addr_range_idx = self.addr_to_range[self.len - 1];
+    const max_addr = last_addr_range_idx.get(self.ranges).addr + last_addr_range_idx.get(self.ranges).memsz;
+    const secidx = self.len - 2;
+    const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + self.header.size_of_optional_header + @sizeOf(std.coff.SectionHeader) * secidx;
+    try file.seekTo(offset);
+    const aligned_max_off = align_ceil(u64, max_off, self.header.file_alignment);
+    const aligned_max_addr = align_ceil(u64, max_addr, self.header.section_alignment);
+    const aligned_size = align_ceil(u64, size, self.header.file_alignment);
+    try self.set_new_shdr(size, flags, @intCast(aligned_max_off), @intCast(aligned_max_addr), file);
+    if (flags.execute) {
+        self.header.size_of_code += @intCast(aligned_size);
+        try self.set_image_optional_header_field(self.header.size_of_code, "size_of_code", file);
+    }
+    self.header.size_of_image += @intCast(aligned_size);
+    try self.set_image_optional_header_field(self.header.size_of_image, "size_of_image", file);
+    try file.seekTo(max_off);
+    try file.writer().writeByteNTimes(0, aligned_max_off - max_off + aligned_size);
+    // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
+    self.off_to_range = (try gpa.realloc(self.off_to_range[0..self.len], self.len + 1)).ptr;
+    self.off_to_range[self.len] = @enumFromInt(self.len);
+    self.addr_to_range = (try gpa.realloc(self.addr_to_range[0..self.len], self.len + 1)).ptr;
+    self.addr_to_range[self.len] = @enumFromInt(self.len);
+
+    self.ranges = (try gpa.realloc(self.ranges[0..self.len], self.len + 1)).ptr;
+    self.ranges[self.len] = .{
+        .off = aligned_max_off,
+        .filesz = aligned_size,
+        .addr = aligned_max_addr,
+        .memsz = size,
+        .flags = flags,
+        .section_flags = .{ .CNT_CODE = if (flags.execute) 1 else 0 },
+        .to_off = @enumFromInt(self.len),
+        .to_addr = @enumFromInt(self.len),
+        .adjust = undefined,
+    };
+    self.len += 1;
+}
+
 comptime {
     const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "ReleaseSafe", "Debug" }; // ReleaseSafe seems to be generated without any large caves.
     const targets = &.{ "x86_64-windows", "x86-windows" };
@@ -476,4 +586,65 @@ comptime {
             };
         }
     }
+}
+
+test "create section same output" {
+    const test_src_path = "./tests/hello_world.zig";
+    const test_with_cave = "./create_section_same_output_coff.exe";
+    const cwd: std.fs.Dir = std.fs.cwd();
+
+    {
+        const build_src_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{ "zig", "build-exe", "-target", "x86_64-windows", "-O", "ReleaseSmall", "-ofmt=coff", "-femit-bin=" ++ test_with_cave[2..], test_src_path },
+        });
+        defer std.testing.allocator.free(build_src_result.stdout);
+        defer std.testing.allocator.free(build_src_result.stderr);
+        try std.testing.expect(build_src_result.term == .Exited);
+        try std.testing.expect(build_src_result.stderr.len == 0);
+    }
+
+    var maybe_no_cave_result: ?std.process.Child.RunResult = null;
+    if (builtin.os.tag == .windows) {
+        // check regular output.
+        maybe_no_cave_result = try std.process.Child.run(.{
+            .allocator = std.testing.allocator,
+            .argv = &[_][]const u8{test_with_cave},
+        });
+    }
+    defer if (maybe_no_cave_result) |no_cave_result| {
+        std.testing.allocator.free(no_cave_result.stdout);
+        std.testing.allocator.free(no_cave_result.stderr);
+    };
+
+    {
+        var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
+        defer f.close();
+        var stream = std.io.StreamSource{ .file = f };
+        const wanted_size = 0xfff;
+        const data = try std.testing.allocator.alloc(u8, try stream.getEndPos());
+        defer std.testing.allocator.free(data);
+        try std.testing.expectEqual(stream.getEndPos(), try stream.read(data));
+        const coff = try std.coff.Coff.init(data, false);
+        const parsed = Parsed.init(coff);
+        var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+        defer coff_modder.deinit(std.testing.allocator);
+        try coff_modder.create_section(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
+    }
+    if (builtin.os.tag != .windows) {
+        return error.SkipZigTest;
+    }
+
+    // check output with a cave
+    const cave_result = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{test_with_cave},
+    });
+    defer std.testing.allocator.free(cave_result.stdout);
+    defer std.testing.allocator.free(cave_result.stderr);
+    try std.testing.expect(cave_result.term == .Exited);
+    try std.testing.expect(maybe_no_cave_result.?.term == .Exited);
+    try std.testing.expectEqual(cave_result.term.Exited, maybe_no_cave_result.?.term.Exited);
+    try std.testing.expectEqualStrings(cave_result.stdout, maybe_no_cave_result.?.stdout);
+    try std.testing.expectEqualStrings(cave_result.stderr, maybe_no_cave_result.?.stderr);
 }
