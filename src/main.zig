@@ -61,7 +61,7 @@ pub fn main() !void {
         var patcher = try patch.Patcher(CoffModder, capstone.Disasm).init(alloc, &f, &parsed);
         defer patcher.deinit(alloc);
         try stdout.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
-        _ = try patcher.pure_patch(patch_addr, wanted_patch, &f);
+        _ = try patcher.try_patch(alloc, patch_addr, wanted_patch, &f);
         try stdout.print("Patch done\n", .{});
     } else {
         if ((try f.read(buf[MZ.len..ELF.len])) != (ELF.len - MZ.len)) return Error.FileTypeNotSupported;
@@ -70,7 +70,7 @@ pub fn main() !void {
             var patcher = try patch.Patcher(ElfModder, capstone.Disasm).init(alloc, &f, &parsed);
             defer patcher.deinit(alloc);
             try stdout.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
-            _ = try patcher.pure_patch(patch_addr, wanted_patch, &f);
+            _ = try patcher.try_patch(alloc, patch_addr, wanted_patch, &f);
             try stdout.print("Patch done\n", .{});
         }
     }

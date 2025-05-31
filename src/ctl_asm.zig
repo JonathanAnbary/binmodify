@@ -68,6 +68,16 @@ test "twos complement" {
     }
 }
 
+pub fn insn_align(_arch: arch.Arch, mode: arch.Mode) !u8 {
+    _ = mode;
+    return switch (_arch) {
+        .X86 => 1,
+        .ARM64 => 0x10,
+        .ARM => 8,
+        else => arch.Error.ArchNotSupported,
+    };
+}
+
 // TODO: change this (no reason to return size since it should be constant)
 pub fn assemble_ctl_transfer(
     _arch: arch.Arch,

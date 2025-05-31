@@ -31,6 +31,7 @@ pub const Error = error{
     FieldNotAdjustable,
     TooManyFileRanges,
     UnmappedRange,
+    RequestedFileAlignmentDisagreeWithHeader,
 } || ShiftError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError || std.coff.CoffError || std.mem.Allocator.Error;
 
 pub const SecEdge: type = struct {
@@ -73,15 +74,15 @@ const SectionFlags = packed struct {
 };
 
 const FileRange: type = struct {
-    off: u64,
-    filesz: u64,
-    addr: u64, // TODO: should be nullable
-    memsz: u64,
+    off: u32,
+    filesz: u32,
+    addr: u32, // TODO: should be nullable
+    memsz: u32,
     flags: FileRangeFlags,
     section_flags: SectionFlags,
     to_off: OffIndex,
     to_addr: AddrIndex,
-    adjust: u64,
+    adjust: u32,
 };
 
 const Modder = @This();
@@ -159,7 +160,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     }
     std.sort.pdq(RangeIndex, addr_to_range[1..ranges_count], ranges, off_lessThanFn);
     std.sort.pdq(RangeIndex, off_to_range[0 .. ranges_count - 1], ranges, addr_lessThanFn);
-    const end_pos = try parse_source.getEndPos();
+    const end_pos: u32 = @intCast(try parse_source.getEndPos());
     const last_off_range_idx = off_to_range[ranges_count - 2];
     const overlay_off = last_off_range_idx.get(ranges.ptr).off + last_off_range_idx.get(ranges.ptr).filesz;
     const overlay_size = end_pos - overlay_off;
@@ -243,10 +244,10 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
     return null;
 }
 
-fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u64) Error!u64 {
+fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u32) Error!u32 {
     // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
     // and for the case of a start edge whith enough space from the previous segment offset.
-    const aligned_size = align_ceil(u64, size, self.header.file_alignment);
+    const aligned_size = align_ceil(u32, size, self.header.file_alignment);
     const prev_off_end = blk: {
         const off_idx = index.get(self.ranges).to_off;
         if (@intFromEnum(off_idx) > 0) {
@@ -347,7 +348,7 @@ fn range_type(self: *const Modder, index: RangeIndex) RangeType {
 
 pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytype) Error!void {
     const offset = edge.sec_idx.get(self.ranges).off;
-    const new_offset: u64 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
+    const new_offset: u32 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
     var needed_size: u32 = @intCast(size + new_offset - offset);
 
     const first_adjust_off_idx = edge.sec_idx.get(self.ranges).to_off.next();
@@ -373,7 +374,7 @@ pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytyp
 
     if (!edge.is_end) {
         try shift_forward(parse_source, edge.sec_idx.get(self.ranges).off, edge.sec_idx.get(self.ranges).off + @min(edge.sec_idx.get(self.ranges).filesz, edge.sec_idx.get(self.ranges).memsz), new_offset + size - edge.sec_idx.get(self.ranges).off);
-        edge.sec_idx.get(self.ranges).addr -= align_ceil(u64, size, self.header.section_alignment);
+        edge.sec_idx.get(self.ranges).addr -= align_ceil(u32, size, self.header.section_alignment);
         try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).addr, .addr, parse_source);
         edge.sec_idx.get(self.ranges).off = new_offset;
         try self.set_filerange_field(edge.sec_idx, edge.sec_idx.get(self.ranges).off, .off, parse_source);
@@ -473,7 +474,9 @@ fn set_new_shdr(self: *const Modder, size: u32, flags: FileRangeFlags, off: u32,
     if (try file.write(&temp) != @sizeOf(std.coff.SectionHeader)) return Error.UnexpectedEof;
 }
 
-pub fn create_section(self: *Modder, gpa: std.mem.Allocator, size: u32, flags: FileRangeFlags, file: anytype) !void {
+pub fn create_filerange(self: *Modder, gpa: std.mem.Allocator, size: u32, file_alignment: u32, flags: FileRangeFlags, file: anytype) !u32 {
+    const max_align = @max(file_alignment, self.header.file_alignment);
+    if ((max_align % @min(file_alignment, self.header.file_alignment)) != 0) return Error.RequestedFileAlignmentDisagreeWithHeader;
     const needed_size: u64 = @sizeOf(std.coff.SectionHeader);
     if ((self.ranges[0].to_addr.next().get(self.addr_to_range).get(self.ranges).addr - self.ranges[0].memsz) < needed_size) return Error.NoSpaceLeft;
     try self.create_cave(needed_size, .{ .is_end = true, .sec_idx = @enumFromInt(0) }, file);
@@ -487,9 +490,9 @@ pub fn create_section(self: *Modder, gpa: std.mem.Allocator, size: u32, flags: F
     const secidx = self.len - 2;
     const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + self.header.size_of_optional_header + @sizeOf(std.coff.SectionHeader) * secidx;
     try file.seekTo(offset);
-    const aligned_max_off = align_ceil(u64, max_off, self.header.file_alignment);
-    const aligned_max_addr = align_ceil(u64, max_addr, self.header.section_alignment);
-    const aligned_size = align_ceil(u64, size, self.header.file_alignment);
+    const aligned_max_off = align_ceil(u32, max_off, max_align);
+    const aligned_max_addr = align_ceil(u32, max_addr, self.header.section_alignment);
+    const aligned_size = align_ceil(u32, size, self.header.file_alignment);
     try self.set_new_shdr(size, flags, @intCast(aligned_max_off), @intCast(aligned_max_addr), file);
     if (flags.execute) {
         self.header.size_of_code += @intCast(aligned_size);
@@ -518,6 +521,7 @@ pub fn create_section(self: *Modder, gpa: std.mem.Allocator, size: u32, flags: F
         .adjust = undefined,
     };
     self.len += 1;
+    return aligned_max_off;
 }
 
 comptime {
@@ -624,7 +628,7 @@ test "create section same output" {
         const parsed = Parsed.init(coff);
         var coff_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer coff_modder.deinit(std.testing.allocator);
-        try coff_modder.create_section(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
+        _ = try coff_modder.create_filerange(std.testing.allocator, wanted_size, 1, .{ .execute = true, .read = true, .write = true }, &stream);
     }
     if (builtin.os.tag != .windows) {
         return error.SkipZigTest;

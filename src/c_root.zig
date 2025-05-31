@@ -98,6 +98,7 @@ pub const Result: type = enum(u8) {
     NoSpaceToExtendPhdrTable,
     TooManyFileRanges,
     PatchTooLarge,
+    RequestedFileAlignmentDisagreeWithHeader,
 };
 
 const AllError = patch.Error || ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error;
@@ -183,6 +184,7 @@ pub fn err_to_res(e: AllError) Result {
         AllError.NoSpaceToExtendPhdrTable => .NoSpaceToExtendPhdrTable,
         AllError.TooManyFileRanges => .TooManyFileRanges,
         AllError.PatchTooLarge => .PatchTooLarge,
+        AllError.RequestedFileAlignmentDisagreeWithHeader => .RequestedFileAlignmentDisagreeWithHeader,
     };
 }
 
@@ -202,9 +204,9 @@ pub export fn ElfPatcher_deinit(patcher: *patch.Patcher(ElfModder, Disasm)) void
 
 pub export fn ElfPatcher_pure_patch(patcher: *patch.Patcher(ElfModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource, maybe_patch_info: ?*patch.PatchInfo) Result {
     if (maybe_patch_info) |patch_info| {
-        patch_info.* = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        patch_info.* = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
     } else {
-        _ = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        _ = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
     }
     return .Ok;
 }
@@ -228,9 +230,9 @@ pub export fn CoffPatcher_deinit(patcher: *patch.Patcher(CoffModder, Disasm)) vo
 
 pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(CoffModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource, maybe_patch_info: ?*patch.PatchInfo) Result {
     if (maybe_patch_info) |patch_info| {
-        patch_info.* = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        patch_info.* = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
     } else {
-        _ = patcher.pure_patch(addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        _ = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
     }
     return .Ok;
 }

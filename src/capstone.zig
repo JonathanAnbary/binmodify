@@ -76,7 +76,7 @@ pub const Disasm: type = struct {
         _ = capstone.cs_close(&self.csh);
     }
 
-    pub fn min_insn_size(self: *Self, size: u64, code: []const u8, addr: u64) u64 {
+    pub fn min_insn_size(self: *const Self, size: u64, code: []const u8, addr: u64) u64 {
         _ = addr;
         const insn: *capstone.cs_insn = capstone.cs_malloc(self.csh);
         defer capstone.cs_free(insn, 1);
@@ -86,8 +86,9 @@ pub const Disasm: type = struct {
         while ((capstone.cs_disasm_iter(self.csh, @ptrCast(&code_ptr), &code_size, &address, insn)) and (address < size)) {}
         return address;
     }
+
     // TODO: figure out why cs_mode is a c_uint while the constants themselves appear to be c_int.
-    pub fn to_cs_mode(curr_arch: arch.Arch, mode: arch.Mode, endian: ?arch.Endian) !capstone.cs_mode {
+    fn to_cs_mode(curr_arch: arch.Arch, mode: arch.Mode, endian: ?arch.Endian) !capstone.cs_mode {
         const cs_endian = blk: {
             if (endian == null) break :blk 0;
             if (endian == arch.Endian.big) break :blk capstone.CS_MODE_BIG_ENDIAN;

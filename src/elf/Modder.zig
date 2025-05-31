@@ -596,11 +596,7 @@ fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: Fil
     if (try file.write(&temp) != @sizeOf(T)) return Error.UnexpectedEof;
 }
 
-// This still does not work!
-// Need to change the logic such that the top filerange containing the phdr_table and then within that top filerange extend
-// the specific filerange of the phdr_table.
-// This will only ever work if there is address space between the end of the phdr_table and the next segment.
-fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileRangeFlags, file: anytype) !void {
+pub fn create_filerange(self: *Modder, gpa: std.mem.Allocator, size: u64, file_align: u64, flags: FileRangeFlags, file: anytype) !u64 {
     const phdr_top_idx = self.off_to_top_idx(self.header.phoff);
     const top_off_idx = phdr_top_idx.get(self.top_to_off);
     const top_range_idx = top_off_idx.get(self.off_to_range);
@@ -647,9 +643,10 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     top_range_idx.get(self.ranges).memsz += needed_size;
     try self.set_filerange_field(top_range_idx.*, top_range_idx.get(self.ranges).memsz, .memsz, file);
 
-    phdr_range_idx.get(self.ranges).filesz += self.header.phentsize;
+    // NOTE: solve the issue of having to increase the size of the phdr by overly much
+    phdr_range_idx.get(self.ranges).filesz += needed_size; // self.header.phentsize;
     try self.set_filerange_field(phdr_range_idx.*, phdr_range_idx.get(self.ranges).filesz, .filesz, file);
-    phdr_range_idx.get(self.ranges).memsz += self.header.phentsize;
+    phdr_range_idx.get(self.ranges).memsz += needed_size; // self.header.phentsize;
     try self.set_filerange_field(phdr_range_idx.*, phdr_range_idx.get(self.ranges).memsz, .memsz, file);
 
     for (@intFromEnum(phdr_off_idx.next())..@intFromEnum(final_off_idx)) |off_idx| {
@@ -659,7 +656,7 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
         try self.set_filerange_field(index.*, index.get(self.ranges).off, .off, file);
     }
 
-    if (!have_forward_space) {
+    if (phdr_is_contained or !have_forward_space) {
         top_range_idx.get(self.ranges).addr -= needed_size;
         try self.set_filerange_field(top_range_idx.*, top_range_idx.get(self.ranges).addr, .addr, file);
         phdr_range_idx.get(self.ranges).addr -= needed_size; // self.header.phentsize;
@@ -669,26 +666,36 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     const last_off_range_idx = self.top_to_off[self.tops_len - 1].get(self.off_to_range);
     const max_off = last_off_range_idx.get(self.ranges).off + last_off_range_idx.get(self.ranges).filesz;
     if (max_off != try file.getEndPos()) return Error.UnmappedRange;
+    const aligned_max_off = utils.align_ceil(u64, max_off, file_align);
     const last_addr_range_idx = self.load_to_addr[self.load_to_addr.len - 1].get(self.addrs_info).to_range;
     const max_addr = last_addr_range_idx.get(self.ranges).addr + last_addr_range_idx.get(self.ranges).memsz;
     try file.seekTo(self.header.phoff + self.header.phentsize * self.header.phnum);
-    const alignment = 0x1000;
+    const alignment = (try self.addr_to_idx(self.header.entry))
+        .get(self.ranges)
+        .to_addr
+        .get(self.addrs_info)
+        .to_load
+        .get(self.load_to_addr.ptr)
+        .get(self.addrs_info)
+        .to_range
+        .get(self.ranges)
+        .alignment;
     const alignment_addend = blk: {
-        if ((max_off % alignment) > (max_addr % alignment)) {
-            break :blk (max_off % alignment) - (max_addr % alignment);
-        } else if ((max_off % alignment) < (max_addr % alignment)) {
-            break :blk alignment + (max_off % alignment) - (max_addr % alignment);
+        if ((aligned_max_off % alignment) > (max_addr % alignment)) {
+            break :blk (aligned_max_off % alignment) - (max_addr % alignment);
+        } else if ((aligned_max_off % alignment) < (max_addr % alignment)) {
+            break :blk alignment + (aligned_max_off % alignment) - (max_addr % alignment);
         } else break :blk 0;
     };
     if (self.header.is_64) {
-        try self.set_new_phdr(true, size, flags, alignment, max_off, max_addr + alignment_addend, file);
+        try self.set_new_phdr(true, size, flags, alignment, aligned_max_off, max_addr + alignment_addend, file);
     } else {
-        try self.set_new_phdr(false, size, flags, alignment, max_off, max_addr + alignment_addend, file);
+        try self.set_new_phdr(false, size, flags, alignment, aligned_max_off, max_addr + alignment_addend, file);
     }
     self.header.phnum += 1;
     try self.set_ehdr_field(self.header.phnum, "phnum", file);
     try file.seekTo(max_off);
-    try file.writer().writeByteNTimes(0, size);
+    try file.writer().writeByteNTimes(0, size + (aligned_max_off - max_off));
     // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
     self.off_to_range = (try gpa.realloc(self.off_to_range[0..self.ranges_len], self.ranges_len + 1)).ptr;
     self.off_to_range[self.ranges_len] = @enumFromInt(self.ranges_len);
@@ -706,7 +713,7 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
     self.ranges = (try gpa.realloc(self.ranges[0..self.ranges_len], self.ranges_len + 1)).ptr;
     self.ranges[self.ranges_len] = .{
         .addr = max_addr + alignment_addend,
-        .off = max_off,
+        .off = aligned_max_off,
         .flags = flags,
         .alignment = alignment,
         .filesz = size,
@@ -715,6 +722,7 @@ fn create_segment(self: *Modder, gpa: std.mem.Allocator, size: u64, flags: FileR
         .to_off = @enumFromInt(self.ranges_len),
     };
     self.ranges_len += 1;
+    return aligned_max_off;
 }
 
 const CompareContext = struct {
@@ -1065,7 +1073,7 @@ test "create segment same output" {
         const parsed = try Parsed.init(&stream);
         var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
         defer elf_modder.deinit(std.testing.allocator);
-        try elf_modder.create_segment(std.testing.allocator, wanted_size, .{ .execute = true, .read = true, .write = true }, &stream);
+        _ = try elf_modder.create_filerange(std.testing.allocator, wanted_size, 1, .{ .execute = true, .read = true, .write = true }, &stream);
     }
     if (builtin.os.tag != .linux) {
         return error.SkipZigTest;
