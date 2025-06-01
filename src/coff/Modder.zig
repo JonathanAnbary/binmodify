@@ -32,7 +32,8 @@ pub const Error = error{
     TooManyFileRanges,
     UnmappedRange,
     RequestedFileAlignmentDisagreeWithHeader,
-} || ShiftError || std.io.StreamSource.ReadError || std.io.StreamSource.WriteError || std.io.StreamSource.SeekError || std.io.StreamSource.GetSeekPosError || std.coff.CoffError || std.mem.Allocator.Error;
+    NoSpaceLeft,
+} || std.coff.CoffError;
 
 pub const SecEdge: type = struct {
     sec_idx: RangeIndex,
@@ -97,7 +98,7 @@ ranges: [*]FileRange, // std.coff.SectionHeader,
 off_to_range: [*]RangeIndex,
 addr_to_range: [*]RangeIndex,
 
-pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) Error!Modder {
+pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) !Modder {
     const coff_header = parsed_source.coff.getCoffHeader();
     const optional_header = parsed_source.coff.getOptionalHeader();
     const image_base = parsed_source.coff.getImageBase();
@@ -219,7 +220,7 @@ pub fn deinit(self: *Modder, gpa: std.mem.Allocator) void {
 
 // Get an identifier for the location within the file where additional data could be inserted.
 // TODO: consider if this function should also look at existing gaps to help find the cave which requires the minimal shift.
-pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) Error!?SecEdge {
+pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFlags) !?SecEdge {
     var i = self.len;
     while (i > 0) {
         i -= 1;
@@ -244,7 +245,7 @@ pub fn get_cave_option(self: *const Modder, wanted_size: u64, flags: FileRangeFl
     return null;
 }
 
-fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u32) Error!u32 {
+fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u32) !u32 {
     // TODO: add a check first for the case of an ending edge in which there already exists a large enough gap.
     // and for the case of a start edge whith enough space from the previous segment offset.
     const aligned_size = align_ceil(u32, size, self.header.file_alignment);
@@ -263,7 +264,7 @@ fn calc_new_offset(self: *const Modder, index: RangeIndex, size: u32) Error!u32 
     return new_offset;
 }
 
-fn set_image_file_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+fn set_image_file_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) !void {
     const offset = self.header.coff_header_offset + @offsetOf(std.coff.CoffHeader, field_name);
     try parse_source.seekTo(offset);
     const T = std.meta.fieldInfo(std.coff.CoffHeader, @field(CoffHeaderFields, field_name)).type;
@@ -272,7 +273,7 @@ fn set_image_file_header_field(self: *const Modder, val: u64, comptime field_nam
     if (try parse_source.write(&temp2) != @sizeOf(T)) return Error.UnexpectedEof;
 }
 
-fn set_image_optional_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+fn set_image_optional_header_field(self: *const Modder, val: u64, comptime field_name: []const u8, parse_source: anytype) !void {
     if (self.header.bitness == .@"32") {
         const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + @offsetOf(std.coff.OptionalHeaderPE32, field_name);
         try parse_source.seekTo(offset);
@@ -292,7 +293,7 @@ fn set_image_optional_header_field(self: *const Modder, val: u64, comptime field
 
 // NOTE: field changes must NOT change the memory order or offset order!
 // TODO: consider what to do when setting the segment which holds the phdrtable itself.
-fn set_sechdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, parse_source: anytype) Error!void {
+fn set_sechdr_field(self: *const Modder, index: RangeIndex, val: u64, comptime field_name: []const u8, parse_source: anytype) !void {
     const secidx = @intFromEnum(index.prev());
     const offset = self.header.coff_header_offset + @sizeOf(std.coff.CoffHeader) + self.header.size_of_optional_header;
     try parse_source.seekTo(offset + @sizeOf(std.coff.SectionHeader) * secidx);
@@ -346,7 +347,7 @@ fn range_type(self: *const Modder, index: RangeIndex) RangeType {
     return .Section;
 }
 
-pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytype) Error!void {
+pub fn create_cave(self: *Modder, size: u32, edge: SecEdge, parse_source: anytype) !void {
     const offset = edge.sec_idx.get(self.ranges).off;
     const new_offset: u32 = if (edge.is_end) offset else try self.calc_new_offset(edge.sec_idx, size);
     var needed_size: u32 = @intCast(size + new_offset - offset);
@@ -414,7 +415,7 @@ fn addr_compareFn(context: CompareContext, rhs: RangeIndex) std.math.Order {
     return std.math.order(context.lhs, rhs.get(context.self.ranges).addr);
 }
 
-pub fn addr_to_off(self: *const Modder, addr: u64) Error!u64 {
+pub fn addr_to_off(self: *const Modder, addr: u64) !u64 {
     const normalized_addr = if (addr < self.header.image_base) return Error.AddrNotMapped else addr - self.header.image_base;
     const containnig_idx = try self.addr_to_idx(normalized_addr);
     if (!(normalized_addr < (containnig_idx.get(self.ranges).addr + containnig_idx.get(self.ranges).memsz))) return Error.AddrNotMapped;
@@ -433,7 +434,7 @@ fn off_compareFn(context: CompareContext, rhs: RangeIndex) std.math.Order {
     return std.math.order(context.lhs, rhs.get(context.self.ranges).off);
 }
 
-pub fn off_to_addr(self: *const Modder, off: u64) Error!u64 {
+pub fn off_to_addr(self: *const Modder, off: u64) !u64 {
     const containnig_idx = self.off_to_idx(off);
     if (!(off < (containnig_idx.get(self.ranges).off + containnig_idx.get(self.ranges).filesz))) return Error.OffsetNotLoaded;
     if ((containnig_idx.get(self.ranges).memsz < containnig_idx.get(self.ranges).filesz) and ((containnig_idx.get(self.ranges).filesz - containnig_idx.get(self.ranges).memsz) >= self.header.file_alignment)) return Error.VirtualSizeLessThenFileSize;

@@ -8,6 +8,7 @@ pub const CoffModder = @import("coff/Modder.zig");
 pub const CoffParsed = @import("coff/Parsed.zig");
 pub const arch = @import("arch.zig");
 pub const FileRangeFlags = @import("utils.zig").FileRangeFlags;
+const ShiftError = @import("utils.zig").ShiftError;
 
 pub const Disasm = @import("capstone.zig").Disasm;
 
@@ -101,7 +102,7 @@ pub const Result: type = enum(u8) {
     RequestedFileAlignmentDisagreeWithHeader,
 };
 
-const AllError = patch.Error || ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error;
+const AllError = patch.Error || ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error || ShiftError || std.mem.Allocator.Error || std.fs.File.WriteError || std.fs.File.ReadError || std.fs.File.SeekError;
 
 pub fn err_to_res(e: AllError) Result {
     return switch (e) {
