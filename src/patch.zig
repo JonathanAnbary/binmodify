@@ -42,7 +42,7 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             reader: anytype,
             parsed: anytype,
         ) !Self {
-            std.debug.print("{} {} {}\n", .{ alloc, reader, parsed });
+            std.debug.print("init\n", .{});
             var modder: Modder = try Modder.init(alloc, parsed, reader);
             errdefer modder.deinit(alloc);
             std.debug.print("try Modder.init(alloc, parsed, reader)\n", .{});
