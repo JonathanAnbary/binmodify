@@ -103,20 +103,24 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
     const coff_header = parsed_source.coff.getCoffHeader();
     const optional_header = parsed_source.coff.getOptionalHeader();
     const image_base = parsed_source.coff.getImageBase();
+    std.debug.print("Coff Modder 1\n", .{});
     const bitness: Bitness = switch (optional_header.magic) {
         std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => .@"32",
         std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => .@"64",
         else => unreachable, // We assume we have validated the header already
     };
+    std.debug.print("Coff Modder 2\n", .{});
     const size_of_headers = switch (bitness) {
         .@"32" => parsed_source.coff.getOptionalHeader32().size_of_headers,
         .@"64" => parsed_source.coff.getOptionalHeader64().size_of_headers,
     };
+    std.debug.print("Coff Modder 3\n", .{});
     if (coff_header.number_of_sections > std.math.maxInt(u16) - 2) return Error.TooManyFileRanges;
     // + 2 for PE header, and overlay.
     const ranges_count: u16 = coff_header.number_of_sections + 2;
     const ranges = try alloc.alloc(FileRange, ranges_count);
     errdefer alloc.free(ranges);
+    std.debug.print("Coff Modder 4\n", .{});
     ranges[0] = .{
         .addr = 0,
         .filesz = size_of_headers,
@@ -149,6 +153,7 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
             .adjust = undefined,
         };
     }
+    std.debug.print("Coff Modder 5\n", .{});
     const addr_to_range = try alloc.alloc(RangeIndex, ranges_count);
     errdefer alloc.free(addr_to_range);
     const off_to_range = try alloc.alloc(RangeIndex, ranges_count);
@@ -160,12 +165,14 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
         addr_to_range[i + 1] = @enumFromInt(i);
         off_to_range[i] = @enumFromInt(i);
     }
+    std.debug.print("Coff Modder 6\n", .{});
     std.sort.pdq(RangeIndex, addr_to_range[1..ranges_count], ranges, off_lessThanFn);
     std.sort.pdq(RangeIndex, off_to_range[0 .. ranges_count - 1], ranges, addr_lessThanFn);
     const end_pos: u32 = @intCast(try parse_source.getEndPos());
     const last_off_range_idx = off_to_range[ranges_count - 2];
     const overlay_off = last_off_range_idx.get(ranges.ptr).off + last_off_range_idx.get(ranges.ptr).filesz;
     const overlay_size = end_pos - overlay_off;
+    std.debug.print("Coff Modder 7\n", .{});
     ranges[ranges_count - 1] = .{
         .addr = 0,
         .filesz = overlay_size,
@@ -179,6 +186,7 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
     };
     off_to_range[ranges_count - 1] = @enumFromInt(ranges_count - 1);
     addr_to_range[0] = @enumFromInt(ranges_count - 1);
+    std.debug.print("Coff Modder 8\n", .{});
     for (off_to_range, addr_to_range, 0..) |off_idx, addr_idx, idx| {
         off_idx.get(ranges.ptr).to_off = @enumFromInt(idx);
         addr_idx.get(ranges.ptr).to_addr = @enumFromInt(idx);
