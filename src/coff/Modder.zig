@@ -183,7 +183,7 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
         off_idx.get(ranges.ptr).to_off = @enumFromInt(idx);
         addr_idx.get(ranges.ptr).to_addr = @enumFromInt(idx);
     }
-    std.debug.print("Modder init done\n");
+    std.debug.print("Modder init done\n", .{});
 
     return Modder{
         .header = .{
