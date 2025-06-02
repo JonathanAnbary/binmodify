@@ -99,7 +99,7 @@ off_to_range: [*]RangeIndex,
 addr_to_range: [*]RangeIndex,
 
 pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) !Modder {
-    std.debug.print("Modder init\n");
+    std.debug.print("Coff Modder init\n");
     const coff_header = parsed_source.coff.getCoffHeader();
     const optional_header = parsed_source.coff.getOptionalHeader();
     const image_base = parsed_source.coff.getImageBase();
