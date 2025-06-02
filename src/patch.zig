@@ -42,10 +42,8 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             reader: anytype,
             parsed: anytype,
         ) !Self {
-            std.debug.print("init\n", .{});
             var modder: Modder = try Modder.init(alloc, parsed, reader);
             errdefer modder.deinit(alloc);
-            std.debug.print("try Modder.init(alloc, parsed, reader)\n", .{});
             const farch = try parsed.get_arch();
             // NOTE: mode might be something that is not constant across the file.
             const fmode = try parsed.get_mode();
