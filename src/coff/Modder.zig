@@ -168,9 +168,12 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
     std.debug.print("Coff Modder 6\n", .{});
     std.sort.pdq(RangeIndex, addr_to_range[1..ranges_count], ranges, off_lessThanFn);
     std.sort.pdq(RangeIndex, off_to_range[0 .. ranges_count - 1], ranges, addr_lessThanFn);
+    std.debug.print("Coff Modder 6.1\n", .{});
     const end_pos: u32 = @intCast(try parse_source.getEndPos());
     const last_off_range_idx = off_to_range[ranges_count - 2];
+    std.debug.print("Coff Modder 6.2\n", .{});
     const overlay_off = last_off_range_idx.get(ranges.ptr).off + last_off_range_idx.get(ranges.ptr).filesz;
+    std.debug.print("Coff Modder 6.3\n", .{});
     const overlay_size = end_pos - overlay_off;
     std.debug.print("Coff Modder 7\n", .{});
     ranges[ranges_count - 1] = .{
