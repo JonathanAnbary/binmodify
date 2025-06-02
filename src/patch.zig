@@ -38,12 +38,14 @@ pub fn Patcher(Modder: type, Disasm: type) type {
         /// assumes that `parsed` contains information that is true for `reader`.
         /// `parsed` must provde `get_arch()`, `get_mode()`, `get_endian()` and be compatible with the `Modder` init function.
         pub fn init(
-            gpa: std.mem.Allocator,
+            alloc: std.mem.Allocator,
             reader: anytype,
             parsed: anytype,
         ) !Self {
-            var modder: Modder = try Modder.init(gpa, parsed, reader);
-            errdefer modder.deinit(gpa);
+            std.debug.print("{} {} {}\n", .{ alloc, reader, parsed });
+            var modder: Modder = try Modder.init(alloc, parsed, reader);
+            errdefer modder.deinit(alloc);
+            std.debug.print("try Modder.init(alloc, parsed, reader)\n", .{});
             const farch = try parsed.get_arch();
             // NOTE: mode might be something that is not constant across the file.
             const fmode = try parsed.get_mode();
@@ -273,7 +275,7 @@ comptime {
 }
 
 comptime {
-    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "ReleaseSafe", "Debug" }; // ReleaseSafe seems to be generated without large caves.
+    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "ReleaseSafe", "Debug" };
     const targets = &.{ "x86_64-windows", "x86-windows" };
     const nops = &.{ [_]u8{0x90}, [_]u8{0x90} };
     for (optimzes, 0..) |optimize, i| {
@@ -336,7 +338,7 @@ comptime {
 }
 
 comptime {
-    const optimzes = &.{ "ReleaseSafe", "ReleaseSmall", "ReleaseFast", "ReleaseSafe", "Debug" };
+    const optimzes = &.{ "ReleaseSmall", "ReleaseFast", "ReleaseSafe", "Debug" };
     const targets = &.{ "x86_64-windows", "x86-windows" };
     const patch = [_]u8{0x90} ** 0x9000;
     for (optimzes) |optimize| {
