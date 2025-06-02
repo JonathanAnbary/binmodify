@@ -98,7 +98,8 @@ ranges: [*]FileRange, // std.coff.SectionHeader,
 off_to_range: [*]RangeIndex,
 addr_to_range: [*]RangeIndex,
 
-pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) !Modder {
+pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) !Modder {
+    std.debug.print("Modder init\n");
     const coff_header = parsed_source.coff.getCoffHeader();
     const optional_header = parsed_source.coff.getOptionalHeader();
     const image_base = parsed_source.coff.getImageBase();
@@ -114,8 +115,8 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     if (coff_header.number_of_sections > std.math.maxInt(u16) - 2) return Error.TooManyFileRanges;
     // + 2 for PE header, and overlay.
     const ranges_count: u16 = coff_header.number_of_sections + 2;
-    const ranges = try gpa.alloc(FileRange, ranges_count);
-    errdefer gpa.free(ranges);
+    const ranges = try alloc.alloc(FileRange, ranges_count);
+    errdefer alloc.free(ranges);
     ranges[0] = .{
         .addr = 0,
         .filesz = size_of_headers,
@@ -148,10 +149,10 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
             .adjust = undefined,
         };
     }
-    const addr_to_range = try gpa.alloc(RangeIndex, ranges_count);
-    errdefer gpa.free(addr_to_range);
-    const off_to_range = try gpa.alloc(RangeIndex, ranges_count);
-    errdefer gpa.free(off_to_range);
+    const addr_to_range = try alloc.alloc(RangeIndex, ranges_count);
+    errdefer alloc.free(addr_to_range);
+    const off_to_range = try alloc.alloc(RangeIndex, ranges_count);
+    errdefer alloc.free(off_to_range);
     // NOTE: We iterate over ranges_count - 1 since we still have the overlay to add to the ranges array.
     // We reserve a spot at the start of the addr_to_range array since we place the overlay at address zero,
     // and at the end of the off_to_range array since the overlay comes last.
@@ -182,6 +183,7 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
         off_idx.get(ranges.ptr).to_off = @enumFromInt(idx);
         addr_idx.get(ranges.ptr).to_addr = @enumFromInt(idx);
     }
+    std.debug.print("Modder init done\n");
 
     return Modder{
         .header = .{
@@ -212,10 +214,10 @@ pub fn init(gpa: std.mem.Allocator, parsed_source: *const Parsed, parse_source: 
     };
 }
 
-pub fn deinit(self: *Modder, gpa: std.mem.Allocator) void {
-    gpa.free(self.off_to_range[0..self.len]);
-    gpa.free(self.addr_to_range[0..self.len]);
-    gpa.free(self.ranges[0..self.len]);
+pub fn deinit(self: *Modder, alloc: std.mem.Allocator) void {
+    alloc.free(self.off_to_range[0..self.len]);
+    alloc.free(self.addr_to_range[0..self.len]);
+    alloc.free(self.ranges[0..self.len]);
 }
 
 // Get an identifier for the location within the file where additional data could be inserted.
@@ -475,7 +477,7 @@ fn set_new_shdr(self: *const Modder, size: u32, flags: FileRangeFlags, off: u32,
     if (try file.write(&temp) != @sizeOf(std.coff.SectionHeader)) return Error.UnexpectedEof;
 }
 
-pub fn create_filerange(self: *Modder, gpa: std.mem.Allocator, size: u32, file_alignment: u32, flags: FileRangeFlags, file: anytype) !u32 {
+pub fn create_filerange(self: *Modder, alloc: std.mem.Allocator, size: u32, file_alignment: u32, flags: FileRangeFlags, file: anytype) !u32 {
     const max_align = @max(file_alignment, self.header.file_alignment);
     if ((max_align % @min(file_alignment, self.header.file_alignment)) != 0) return Error.RequestedFileAlignmentDisagreeWithHeader;
     const needed_size: u64 = @sizeOf(std.coff.SectionHeader);
@@ -504,12 +506,12 @@ pub fn create_filerange(self: *Modder, gpa: std.mem.Allocator, size: u32, file_a
     try file.seekTo(max_off);
     try file.writer().writeByteNTimes(0, aligned_max_off - max_off + aligned_size);
     // NOTE: This is kind of stupid, should instead keep three numbers which track the index where the new segments start.
-    self.off_to_range = (try gpa.realloc(self.off_to_range[0..self.len], self.len + 1)).ptr;
+    self.off_to_range = (try alloc.realloc(self.off_to_range[0..self.len], self.len + 1)).ptr;
     self.off_to_range[self.len] = @enumFromInt(self.len);
-    self.addr_to_range = (try gpa.realloc(self.addr_to_range[0..self.len], self.len + 1)).ptr;
+    self.addr_to_range = (try alloc.realloc(self.addr_to_range[0..self.len], self.len + 1)).ptr;
     self.addr_to_range[self.len] = @enumFromInt(self.len);
 
-    self.ranges = (try gpa.realloc(self.ranges[0..self.len], self.len + 1)).ptr;
+    self.ranges = (try alloc.realloc(self.ranges[0..self.len], self.len + 1)).ptr;
     self.ranges[self.len] = .{
         .off = aligned_max_off,
         .filesz = aligned_size,
