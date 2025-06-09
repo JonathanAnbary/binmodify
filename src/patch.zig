@@ -42,18 +42,14 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             reader: anytype,
             parsed: anytype,
         ) !Self {
-            std.debug.print("hello1.1.10.1\n", .{});
             var modder: Modder = try Modder.init(alloc, parsed, reader);
             errdefer modder.deinit(alloc);
-            std.debug.print("hello1.1.10.2\n", .{});
             const farch = try parsed.get_arch();
             // NOTE: mode might be something that is not constant across the file.
             const fmode = try parsed.get_mode();
             const fendian = try parsed.get_endian();
-            std.debug.print("hello1.1.10.3\n", .{});
             var disasm: Disasm = try Disasm.init(farch, fmode, fendian);
             errdefer disasm.deinit();
-            std.debug.print("hello1.1.10.4\n", .{});
 
             return Self{
                 .modder = modder,

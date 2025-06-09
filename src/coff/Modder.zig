@@ -100,28 +100,23 @@ off_to_range: [*]RangeIndex,
 addr_to_range: [*]RangeIndex,
 
 pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source: anytype) !Modder {
-    std.debug.print("hello1.1.10.1.1\n", .{});
     const coff_header = parsed_source.coff.getCoffHeader();
     const optional_header = parsed_source.coff.getOptionalHeader();
     const image_base = parsed_source.coff.getImageBase();
-    std.debug.print("hello1.1.10.1.2\n", .{});
     const bitness: Bitness = switch (optional_header.magic) {
         std.coff.IMAGE_NT_OPTIONAL_HDR32_MAGIC => .@"32",
         std.coff.IMAGE_NT_OPTIONAL_HDR64_MAGIC => .@"64",
         else => unreachable, // We assume we have validated the header already
     };
-    std.debug.print("hello1.1.10.1.3\n", .{});
     const size_of_headers = switch (bitness) {
         .@"32" => parsed_source.coff.getOptionalHeader32().size_of_headers,
         .@"64" => parsed_source.coff.getOptionalHeader64().size_of_headers,
     };
     if (coff_header.number_of_sections > std.math.maxInt(u16) - 2) return Error.TooManyFileRanges;
-    std.debug.print("hello1.1.10.1.4\n", .{});
     // + 2 for PE header, and overlay.
     const ranges_count: u16 = coff_header.number_of_sections + 2;
     const ranges = try alloc.alloc(FileRange, ranges_count);
     errdefer alloc.free(ranges);
-    std.debug.print("hello1.1.10.1.5\n", .{});
     ranges[0] = .{
         .addr = 0,
         .filesz = size_of_headers,
@@ -133,7 +128,6 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
         .to_addr = undefined,
         .adjust = undefined,
     };
-    std.debug.print("hello1.1.10.1.6\n", .{});
     for (parsed_source.coff.getSectionHeaders(), 1..) |sechdr, i| {
         ranges[i] = .{
             .off = sechdr.pointer_to_raw_data,
@@ -155,12 +149,10 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
             .adjust = undefined,
         };
     }
-    std.debug.print("hello1.1.10.1.7\n", .{});
     const addr_to_range = try alloc.alloc(RangeIndex, ranges_count);
     errdefer alloc.free(addr_to_range);
     const off_to_range = try alloc.alloc(RangeIndex, ranges_count);
     errdefer alloc.free(off_to_range);
-    std.debug.print("hello1.1.10.1.8\n", .{});
     // NOTE: We iterate over ranges_count - 1 since we still have the overlay to add to the ranges array.
     // We reserve a spot at the start of the addr_to_range array since we place the overlay at address zero,
     // and at the end of the off_to_range array since the overlay comes last.
@@ -168,20 +160,13 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
         addr_to_range[i + 1] = @enumFromInt(i);
         off_to_range[i] = @enumFromInt(i);
     }
-    std.debug.print("hello1.1.10.1.9\n", .{});
     std.sort.pdq(RangeIndex, addr_to_range[1..ranges_count], ranges, off_lessThanFn);
     std.sort.pdq(RangeIndex, off_to_range[0 .. ranges_count - 1], ranges, addr_lessThanFn);
-    std.debug.print("hello1.1.10.1.10\n", .{});
     const end_pos: u32 = @intCast(try parse_source.getEndPos());
-    std.debug.print("hello1.1.10.1.11\n", .{});
     const last_off_range_idx = off_to_range[ranges_count - 2];
-    std.debug.print("hello1.1.10.1.12\n", .{});
     const overlay_off = last_off_range_idx.get(ranges.ptr).off + last_off_range_idx.get(ranges.ptr).filesz;
-    std.debug.print("hello1.1.10.1.13\n", .{});
     if (overlay_off > end_pos) return Error.TruncatedSection;
-    std.debug.print("hello1.1.10.1.14\n", .{});
     const overlay_size = end_pos - overlay_off;
-    std.debug.print("hello1.1.10.1.15\n", .{});
     ranges[ranges_count - 1] = .{
         .addr = 0,
         .filesz = overlay_size,
@@ -193,15 +178,12 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
         .to_addr = undefined,
         .adjust = undefined,
     };
-    std.debug.print("hello1.1.10.1.16\n", .{});
     off_to_range[ranges_count - 1] = @enumFromInt(ranges_count - 1);
     addr_to_range[0] = @enumFromInt(ranges_count - 1);
-    std.debug.print("hello1.1.10.1.17\n", .{});
     for (off_to_range, addr_to_range, 0..) |off_idx, addr_idx, idx| {
         off_idx.get(ranges.ptr).to_off = @enumFromInt(idx);
         addr_idx.get(ranges.ptr).to_addr = @enumFromInt(idx);
     }
-    std.debug.print("hello1.1.10.1.18\n", .{});
 
     return Modder{
         .header = .{
