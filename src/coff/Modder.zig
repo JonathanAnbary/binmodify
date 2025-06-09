@@ -173,11 +173,15 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
     std.sort.pdq(RangeIndex, off_to_range[0 .. ranges_count - 1], ranges, addr_lessThanFn);
     std.debug.print("hello1.1.10.1.10\n", .{});
     const end_pos: u32 = @intCast(try parse_source.getEndPos());
-    const last_off_range_idx = off_to_range[ranges_count - 2];
-    const overlay_off = last_off_range_idx.get(ranges.ptr).off + last_off_range_idx.get(ranges.ptr).filesz;
-    if (overlay_off > end_pos) return Error.TruncatedSection;
-    const overlay_size = end_pos - overlay_off;
     std.debug.print("hello1.1.10.1.11\n", .{});
+    const last_off_range_idx = off_to_range[ranges_count - 2];
+    std.debug.print("hello1.1.10.1.12\n", .{});
+    const overlay_off = last_off_range_idx.get(ranges.ptr).off + last_off_range_idx.get(ranges.ptr).filesz;
+    std.debug.print("hello1.1.10.1.13\n", .{});
+    if (overlay_off > end_pos) return Error.TruncatedSection;
+    std.debug.print("hello1.1.10.1.14\n", .{});
+    const overlay_size = end_pos - overlay_off;
+    std.debug.print("hello1.1.10.1.15\n", .{});
     ranges[ranges_count - 1] = .{
         .addr = 0,
         .filesz = overlay_size,
@@ -189,15 +193,15 @@ pub fn init(alloc: std.mem.Allocator, parsed_source: *const Parsed, parse_source
         .to_addr = undefined,
         .adjust = undefined,
     };
-    std.debug.print("hello1.1.10.1.12\n", .{});
+    std.debug.print("hello1.1.10.1.16\n", .{});
     off_to_range[ranges_count - 1] = @enumFromInt(ranges_count - 1);
     addr_to_range[0] = @enumFromInt(ranges_count - 1);
-    std.debug.print("hello1.1.10.1.13\n", .{});
+    std.debug.print("hello1.1.10.1.17\n", .{});
     for (off_to_range, addr_to_range, 0..) |off_idx, addr_idx, idx| {
         off_idx.get(ranges.ptr).to_off = @enumFromInt(idx);
         addr_idx.get(ranges.ptr).to_addr = @enumFromInt(idx);
     }
-    std.debug.print("hello1.1.10.1.14\n", .{});
+    std.debug.print("hello1.1.10.1.18\n", .{});
 
     return Modder{
         .header = .{
