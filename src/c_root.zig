@@ -100,6 +100,7 @@ pub const Result: type = enum(u8) {
     TooManyFileRanges,
     PatchTooLarge,
     RequestedFileAlignmentDisagreeWithHeader,
+    TruncatedSection,
 };
 
 const AllError = patch.Error || ElfModder.Error || CoffModder.Error || Disasm.Error || arch.Error || ShiftError || std.mem.Allocator.Error || std.fs.File.WriteError || std.fs.File.ReadError || std.fs.File.SeekError;
@@ -186,6 +187,7 @@ pub fn err_to_res(e: AllError) Result {
         AllError.TooManyFileRanges => .TooManyFileRanges,
         AllError.PatchTooLarge => .PatchTooLarge,
         AllError.RequestedFileAlignmentDisagreeWithHeader => .RequestedFileAlignmentDisagreeWithHeader,
+        AllError.TruncatedSection => .TruncatedSection,
     };
 }
 
